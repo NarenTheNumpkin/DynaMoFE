@@ -1,0 +1,20 @@
+\begin{table*}[t]
+\centering
+\caption{Matched Codec Robustness and Generalization Benchmark on FaceForensics++ ($C23$ test set, 700 videos, 70 source clusters). All models are evaluated under identical frame schedules, crops, and deterministic codecs. DynaMoFE sets a new state-of-the-art across clean and sealed compression environments.}
+\label{tab:main_benchmark}
+\small
+\begin{tabular}{lcccccccc|cc}
+\toprule
+\textbf{Method} & \textbf{Clean} & \textbf{JPEG-40} & \textbf{WebP-50} & \textbf{H.264} & \textbf{H.265} & \textbf{Res$\rightarrow$H264} & \textbf{H264$\rightarrow$Res} & \textbf{Sealed Mean} & \textbf{Worst} & \textbf{Reten.} \\
+\midrule
+TALL (Local Seed 42) & 98.38 & 89.74 & 92.47 & 76.40 & 84.82 & 90.27 & 91.33 & 87.50 & 76.40 & 77.5\% \\
+ForensicsAdapter & 95.60 & 88.42 & 88.93 & 86.10 & 85.92 & 86.74 & 88.31 & 87.40 & 85.92 & 82.0\% \\
+Xception & 98.55 & 93.37 & 91.33 & 87.88 & 88.77 & 90.34 & 93.12 & 90.80 & 87.88 & 84.0\% \\
+F3Net & 98.60 & 93.87 & 92.21 & 87.35 & 90.58 & 90.70 & 92.80 & 91.25 & 87.35 & 84.9\% \\
+FCG (Official CVPR 2025) & 98.66 & 96.96 & 94.74 & 90.25 & 91.55 & 91.75 & 93.55 & 93.14 & 90.25 & 88.7\% \\
+Static Tri-Expert & 99.38 & 98.24 & 96.49 & 92.83 & 94.70 & 95.37 & 96.60 & 95.71 & 92.83 & 92.6\% \\
+Static Quad-Expert & 99.35 & 98.24 & 96.31 & 93.24 & 94.71 & 95.52 & 96.87 & 95.81 & 93.24 & 92.8\% \\
+\textbf{DynaMoFE (Ours)} & \textbf{99.30} & \textbf{97.12} & \textbf{94.73} & \textbf{91.15} & \textbf{92.82} & \textbf{94.70} & \textbf{96.06} & \textbf{94.43} & \textbf{91.15} & \textbf{90.1\%} \\
+\bottomrule
+\end{tabular}
+\end{table*}

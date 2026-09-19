@@ -1,0 +1,78 @@
+{
+  "codec_generation": {
+    "ffmpeg_binary": "/usr/bin/ffmpeg",
+    "fps": 25,
+    "implementation": "/root/deepfake-research/code/TALL4Deepfake/cods/codecs.py",
+    "preset": "medium",
+    "timeout_seconds_per_video": 120
+  },
+  "cods_configuration": "/root/deepfake-research/outputs/cods_v0_decision_stability_seed42/configuration.json",
+  "configuration_sha256": "f0404693d028b3e32516d7737a7505e90fdfaec85706152c5527d0a6c369b2ea",
+  "data_root": "/root/deepfake-research/data/faces/ffpp_c23",
+  "dataset": "FaceForensics++ C23 test",
+  "dependency_sha256": {
+    "benchmark_analysis": "a4194befa832bccb179f0fd3c4e47581551580d87f4a14b4b35b03cc31c80d36",
+    "benchmark_model_adapters": "35795a43bfb70992afef6f58f8c0a06ac49f061ad4e5327be379bf8cfb076507",
+    "checkpoint_f3net_deepfakebench": "deee7d25bfc1b8b5ba83054a664880078de51213b1067f1e472c2bed7cc667f9",
+    "checkpoint_fcg_official": "70a47c827ede1ddca716404ec518913e26eb316ab57e41528fb191aaae7e4db6",
+    "checkpoint_forensics_adapter_official": "3d87f9bfabb2a4ab3ad5fa0c2bf43bd0b41377b7546fdad0a9b61a1d4adfbddb",
+    "checkpoint_tall_local_seed42": "241d7c2047bbd62ecaa5d59960298e651270bfe8650802060e05701d02987ddc",
+    "checkpoint_xception_deepfakebench": "dd61186f9ac8e99aae85982cae338b555dfaeef042f6b699e5a55cae3998ba47",
+    "codec_implementation": "d3c969e087f2136dfa99b3005ab2b490665493e33860931798882aabd99ca10b",
+    "cods_configuration": "4c8225a2a499161d68d29f30910b33b8eec8641e09cce22c17ebe5f99fdef100",
+    "ffpp_test_list": "ba0a474d1a842b15b0234db8fc3808b0cb6be1822fbe8523324d8bbe64b8024c",
+    "pairing_table": "17bc5c2e1be5f6fe1fcb6bec58fb18a4198ffb9c86bfec812b83159d0034551e",
+    "schedule_cache": "3f1d4341cb37759143bb4e47bd4faad068a9c908c0d226bb989c2866d2e6fdb7"
+  },
+  "environments": [
+    "canonical",
+    "jpeg40",
+    "webp50",
+    "h264_crf35",
+    "h265_crf32",
+    "resize075_then_h264_crf30",
+    "h264_crf30_then_resize075"
+  ],
+  "external_models": [
+    "tall_local_seed42",
+    "fcg_official",
+    "forensics_adapter_official",
+    "xception_deepfakebench",
+    "f3net_deepfakebench"
+  ],
+  "frame_protocol": {
+    "crop_size_before_codec": 224,
+    "fcg_positions_within_32": [
+      0,
+      3,
+      7,
+      10,
+      14,
+      17,
+      21,
+      24,
+      28,
+      31
+    ],
+    "redetect_faces": false,
+    "registered_frames": 32,
+    "same_existing_face_crop": true,
+    "sealed_tuning": false,
+    "shape": [
+      8,
+      4
+    ]
+  },
+  "list_file": "/root/deepfake-research/data/lists/ffpp_test.txt",
+  "pairing_file": "/root/deepfake-research/outputs/representation_autopsy_pipeline_controls_v2/pairing/ffpp_test.csv",
+  "schedule_cache": "/root/deepfake-research/outputs/cods_v0_decision_stability_seed42/cache/ffpp_test_sealed_confirmation.pt",
+  "schema": "external_codec_robustness_benchmark_v1",
+  "statistics": {
+    "bootstrap_replicates": 10000,
+    "bootstrap_seed": 20260916,
+    "cluster": "FF++ source identity (70 clusters, 10 videos each)",
+    "cods_seed_comparisons": "each of 42,123,3407 separately versus each external checkpoint",
+    "confidence": 0.95
+  },
+  "videos": 700
+}

@@ -1,0 +1,7 @@
+# Use the IEEE class and bibliography style supplied with this project.
+$ENV{'TEXINPUTS'} = './IEEE-conference-template-062824 2:' . ($ENV{'TEXINPUTS'} // '');
+$ENV{'BSTINPUTS'} = './IEEEtranBST2 (1):' . ($ENV{'BSTINPUTS'} // '');
+
+$pdf_mode = 1;
+$pdflatex = 'pdflatex -interaction=nonstopmode -halt-on-error -file-line-error %O %S';
+$bibtex = 'bibtex %O %B';

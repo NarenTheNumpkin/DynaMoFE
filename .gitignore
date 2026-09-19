@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# LaTeX build artifacts (keep PDF)
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.synctex.gz
+paper/*.out
+paper/*.toc
+
+# Keep data and results
+!outputs/degradations/*.pt
+!data/predictions/*.csv
+!data/benchmark_configuration.json
+!paper/paper.pdf
+!paper/figures/*.pdf
+!paper/figures/*.png
