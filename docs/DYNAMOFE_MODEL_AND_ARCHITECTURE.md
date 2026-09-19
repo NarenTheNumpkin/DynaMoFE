@@ -192,23 +192,49 @@ To eliminate identity-confounded shortcuts, training is conducted using **5-Fold
 ## 7. Empirical Performance & Benchmark Results
 
 ### 7.1 Matched Codec Robustness Benchmark (ROC-AUC %)
-Evaluated across 700 \ffpp{} $C23$ test videos (140 real, 560 fake) across 7 deterministic environments:
+Evaluated across 700 FaceForensics++ $C23$ test videos (140 real, 560 fake) across 7 deterministic environments (all models evaluated under identical frame schedules, face crops, and deterministic codecs):
 
 | Method | Clean | JPEG-40 | WebP-50 | H.264 (CRF 35) | H.265 (CRF 32) | Res $\rightarrow$ H.264 | H.264 $\rightarrow$ Res | Sealed Mean | Worst Codec | Retention |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **TALL (Local)** | 98.38 | 89.74 | 92.47 | 76.40 | 84.82 | 90.27 | 91.33 | 87.50 | 76.40 | 77.5\% |
+| **TALL (Local Seed 42)** | 98.38 | 89.74 | 92.47 | 76.40 | 84.82 | 90.27 | 91.33 | 87.50 | 76.40 | 77.5\% |
 | **ForensicsAdapter** | 95.60 | 88.42 | 88.93 | 86.10 | 85.92 | 86.74 | 88.31 | 87.40 | 85.92 | 82.0\% |
 | **Xception** | 98.55 | 93.37 | 91.33 | 87.88 | 88.77 | 90.34 | 93.12 | 90.80 | 87.88 | 84.0\% |
 | **F3Net** | 98.60 | 93.87 | 92.21 | 87.35 | 90.58 | 90.70 | 92.80 | 91.25 | 87.35 | 84.9\% |
-| **FCG (CVPR 2025)** | 98.66 | 96.96 | 94.74 | 90.25 | 91.55 | 91.75 | 93.55 | 93.14 | 90.25 | 88.7\% |
-| **DynaMoFE (Adaptive OOF)** | **99.30** | **97.12** | **94.73** | **91.15** | **92.82** | **94.70** | **96.06** | **94.43** | **91.15** | **90.1\%** |
-| **DynaMoFE (Full Synergy)** | **99.38** | **98.24** | **96.49** | **93.24** | **94.71** | **95.52** | **96.87** | **95.81** | **93.24** | **92.8\%** |
+| **FCG (Official CVPR 2025)** | 98.66 | 96.96 | 94.74 | 90.25 | 91.55 | 91.75 | 93.55 | 93.14 | 90.25 | 88.7\% |
+| **$\text{DynaMoFE}_{\text{static}}$ (Tri-Domain)** | 99.38 | 98.24 | 96.49 | 92.83 | 94.70 | 95.37 | 96.60 | 95.71 | 92.83 | 92.6\% |
+| **$\text{DynaMoFE}_{\text{static}}$ (Quad-Domain)** | **99.35** | **98.24** | **96.31** | **93.24** | **94.71** | **95.52** | **96.87** | **95.81** | **93.24** | **92.8\%** |
+| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.30 | 97.12 | 94.73 | 91.15 | 92.82 | 94.70 | 96.06 | 94.43 | 91.15 | 90.1\% |
 
-### 7.2 Key Findings
-1. **New SOTA Under Heavy Compression:** Under H.264 CRF 35 (the most damaging condition for all models), DynaMoFE delivers **92.83%–93.24% AUC**, beating the strongest prior model (FCG 90.25%) by **+2.58 to +2.99 pp** and TALL (76.40%) by **+16.43 pp**.
-2. **Superior Clean Discrimination:** On pristine video, DynaMoFE achieves **99.38% AUC**, exceeding every individual detector.
-3. **Cross-Dataset Generalization:** On the 518 videos of Celeb-DF-v2, DynaMoFE reaches **93.84% AUC**, outperforming official FCG (93.58%) and standalone TALL (84.92%).
-4. **Statistical Significance:** In 10,000-replicate paired cluster bootstraps, DynaMoFE achieves strictly positive $95\%$ confidence intervals against all five external baselines.
+### 7.2 Key Findings & Rigorous Statistical Analysis
+
+1. **Multi-Domain Forensic Synergy Sets New SOTA:**
+   $\text{DynaMoFE}_{\text{static}}$ achieves **95.81\% sealed mean AUC** (Quad-Domain) and **95.71\%** (Tri-Domain), outperforming the previous best foundation model (\fcg{} 93.14\%) by **+2.57 to +2.67 pp**, \fthreenet{} by **+4.46 to +4.56 pp**, and \tall{} by **+8.21 to +8.31 pp**.
+2. **Worst-Case Codec Resilience (H.264 CRF 35):**
+   Under extreme bit-rate compression, $\text{DynaMoFE}_{\text{static}}$ achieves **93.24\% AUC**, surpassing \fcg{} (90.25\%) by **+2.99 pp** and \tall{} (76.40\%) by **+16.84 pp**. $\text{DynaMoFE}_{\text{adaptive}}$ achieves **91.15\% AUC** (+0.90 pp over \fcg{}, +14.75 pp over \tall{}).
+3. **Cross-Dataset Generalization:**
+   On the 518 videos of Celeb-DF-v2, $\text{DynaMoFE}$ achieves **93.84\% AUC**, exceeding standalone \tall{} (84.92\%) by **+8.92 pp** and outperforming official \fcg{} (93.58\%).
+4. **Analytical Understanding of Static vs. Learned Gating (The Estimation Variance Phenomenon):**
+   *Why does the static prior outperform the learned router (95.81\% vs 94.43\%)?*
+   - *Error Orthogonality:* The constituent backbones (CLIP ViT, Swin thumbnail, DCT frequency CNN, Xception) have largely uncorrelated failure modes. A fixed convex combination eliminates domain-specific errors with zero estimation variance ($\operatorname{Var}(\hat{\theta}) = 0$).
+   - *Finite-Sample Estimation Variance:* Across the 70 source identity clusters (56 training clusters per fold), grid search demonstrates that the theoretical oracle upper bound per environment is $95.93\%$---a headroom of only $+0.12$ pp over the static ensemble. However, learning a 16-parameter neural router introduces sample-level variance that offsets this marginal headroom, showing that a fixed multi-domain prior provides the most dependable guarantee on current benchmark scales.
+5. **Exact 10,000-Replicate Paired Cluster Bootstrap Significance:**
+   - **For $\text{DynaMoFE}_{\text{static}}$:**
+     * Clean vs \fcg{}: $\Delta = +0.72$ pp (95\% CI: $[+0.18, +1.32]$, $p < 0.05$).
+     * Clean vs \tall{}: $\Delta = +1.00$ pp (95\% CI: $[+0.32, +1.78]$, $p < 0.05$).
+     * H.264 CRF 35 vs \fcg{}: $\Delta = +2.58$ pp (95\% CI: $[+1.04, +4.26]$, $p < 0.001$).
+     * H.264 CRF 35 vs \tall{}: $\Delta = +16.43$ pp (95\% CI: $[+12.10, +20.94]$, $p < 0.0001$).
+   - **For $\text{DynaMoFE}_{\text{adaptive}}$ (OOF):**
+     * Clean vs \tall{}: $\Delta = +0.92$ pp (95\% CI: $[+0.14, +1.99]$, $p < 0.05$).
+     * Clean vs \fthreenet{}: $\Delta = +0.69$ pp (95\% CI: $[+0.18, +1.25]$, $p < 0.05$).
+     * Clean vs Xception: $\Delta = +0.74$ pp (95\% CI: $[+0.28, +1.26]$, $p < 0.05$).
+     * Clean vs ForensicsAdapter: $\Delta = +3.69$ pp (95\% CI: $[+2.41, +4.92]$, $p < 0.0001$).
+     * Clean vs \fcg{}: $\Delta = +0.64$ pp (95\% CI: $[-0.03, +1.29]$, $p = 0.058$, not strictly significant).
+     * H.264 CRF 35: strictly positive against \tall{} (+14.76 pp), \fthreenet{} (+3.81 pp), Xception (+3.27 pp), ForensicsAdapter (+5.05 pp) with $p < 0.001$.
+6. **Relation to 2026 Literature:**
+   - **TriMoE (CVPRW 2026):** Employs spatial, spectral, and temporal sub-networks with top-$k$ sparse routing based on *latent semantic tokens*. DynaMoFE differs fundamentally by conditioning routing on *deterministic physical transmission degradation signatures* (spectral decay, 8x8 block boundary step jumps, temporal motion difference entropy) that quantify transmission channel distortion directly.
+   - **WGN (CVPRW 2026):** Demonstrates wavelet transform efficacy for multi-scale frequency features.
+   - **UMCL (IJCV 2026):** Derives pseudo-multimodal physiological and landmark features with cross-quality contrastive learning.
+   - **GenD (CVPR 2026) & QTFP (2026):** Representation calibration and query token feature pyramids.
 
 ---
 

@@ -94,14 +94,19 @@ flowchart TD
 | **Xception** | 98.55 | 93.37 | 91.33 | 87.88 | 88.77 | 90.34 | 93.12 | 90.80 | 87.88 | 84.0% |
 | **F3Net** | 98.60 | 93.87 | 92.21 | 87.35 | 90.58 | 90.70 | 92.80 | 91.25 | 87.35 | 84.9% |
 | **FCG (Official CVPR 2025)** | 98.66 | 96.96 | 94.74 | 90.25 | 91.55 | 91.75 | 93.55 | 93.14 | 90.25 | 88.7% |
-| **DynaMoFE (Adaptive OOF)** | **99.30** | **97.12** | **94.73** | **91.15** | **92.82** | **94.70** | **96.06** | **94.43** | **91.15** | **90.1%** |
-| **DynaMoFE (Full Synergy)** | **99.38** | **98.24** | **96.49** | **93.24** | **94.71** | **95.52** | **96.87** | **95.81** | **93.24** | **92.8%** |
+| **$\text{DynaMoFE}_{\text{static}}$ (Tri-Domain)** | 99.38 | 98.24 | 96.49 | 92.83 | 94.70 | 95.37 | 96.60 | 95.71 | 92.83 | 92.6% |
+| **$\text{DynaMoFE}_{\text{static}}$ (Quad-Domain)** | **99.35** | **98.24** | **96.31** | **93.24** | **94.71** | **95.52** | **96.87** | **95.81** | **93.24** | **92.8%** |
+| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.30 | 97.12 | 94.73 | 91.15 | 92.82 | 94.70 | 96.06 | 94.43 | 91.15 | 90.1% |
 
 ### Key Empirical Highlights:
-* **Worst-Case Robustness (H.264 CRF 35):** DynaMoFE reaches **93.24% AUC**, beating FCG (90.25%) by **+2.99 pp** and TALL (76.40%) by **+16.84 pp**.
-* **Clean Benchmark:** Reaches **99.38% AUC**, surpassing all individual models.
+* **Multi-Domain Forensic Synergy SOTA:** $\text{DynaMoFE}_{\text{static}}$ reaches **95.81% sealed mean AUC** (+2.67 pp over FCG 93.14%, +4.56 pp over F3Net, +8.31 pp over TALL).
+* **Worst-Case Robustness (H.264 CRF 35):** $\text{DynaMoFE}_{\text{static}}$ reaches **93.24% AUC** (+2.99 pp over FCG 90.25%, +16.84 pp over TALL 76.40%). $\text{DynaMoFE}_{\text{adaptive}}$ reaches **91.15% AUC** (+0.90 pp over FCG, +14.75 pp over TALL).
 * **Cross-Dataset Transfer (Celeb-DF-v2):** Achieves **93.84% AUC**, outperforming standalone TALL (84.92%) by **+8.92 pp** and FCG (93.58%).
-* **Paired Bootstrap Significance:** 10,000-replicate paired cluster bootstraps confirm strictly positive $95\%$ confidence intervals against all external baselines.
+* **Exact 10,000-Replicate Paired Cluster Bootstrap Significance:**
+  * $\text{DynaMoFE}_{\text{static}}$ achieves strictly positive $95\%$ confidence intervals against all external baselines across all environments ($p < 0.05$ on clean; $p < 0.001$ on H.264).
+  * $\text{DynaMoFE}_{\text{adaptive}}$ achieves strictly positive confidence intervals under compression against all external models ($p < 0.001$). On clean canonical video, it significantly outperforms TALL ($+0.92$ pp), F3Net ($+0.69$ pp), Xception ($+0.74$ pp), and ForensicsAdapter ($+3.69$ pp) with $p < 0.05$, while against the high-capacity FCG foundation model on clean video, the margin is $+0.64$ pp ($95\%$ CI: $[-0.03, +1.29]$, $p = 0.058$).
+* **Analytical Static vs. Adaptive Dynamics:** While the theoretical oracle upper bound across environments is 95.93% (+0.12 pp over static), learning a 16-parameter neural router across 70 source identity clusters introduces sample-level estimation variance that slightly offsets this headroom. A fixed multi-domain prior therefore delivers zero estimation variance and superior out-of-fold generalization.
+* **Relation to 2026 Literature:** Evaluated alongside 2026 advances including TriMoE (CVPRW 2026), WGN (CVPRW 2026), UMCL (IJCV 2026), GenD (CVPR 2026), and QTFP (2026). In contrast to TriMoE's latent feature routing, DynaMoFE routes via non-semantic physical degradation signatures.
 
 ---
 
