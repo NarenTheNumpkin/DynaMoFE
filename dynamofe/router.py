@@ -1,4 +1,4 @@
-"""Dynamic Gating Router and DynaMoFE Detector Architecture.
+"""Dynamic Gating Router and DynaMoFE Detector Architecture (v2 Reliability-Supervised).
 
 Routes across heterogeneous forensic experts based on transmission degradation signatures:
 - Semantic Component Guidance (FCG)
@@ -9,6 +9,7 @@ Routes across heterogeneous forensic experts based on transmission degradation s
 
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 import torch
 from torch import Tensor, nn
@@ -19,9 +20,12 @@ class DynamicGatingRouter(nn.Module):
     """Predicts condition-dependent expert risk and mixture weights across M forensic experts.
 
     Conditioned on the K-dimensional video degradation signature d:
-        R_m(d) = E[l(s_m(X), y) | D(X) = d]
-        w_m(d) propto exp(-R_m(d) / tau)
-    anchored around base synergy priors w_0 in Delta^{M-1}.
+        \hat{R}_m(d) = E[l(s_m(X), y) | D(X) = d]
+        w_{dyn, m}(d) propto exp(log(w_{base, m}) - \hat{R}_m(d) / tau)
+    anchored around base synergy priors w_0 in Delta^{M-1}, with optional
+    confidence-gated fallback to the static multi-domain prior based on routing entropy:
+        alpha(d) = clamp(gamma * (1 - H(w_dyn) / log(M)), 0, 1)
+        w(X) = (1 - alpha(X)) * w_base + alpha(X) * w_dyn(X).
     """
 
     def __init__(
@@ -32,17 +36,25 @@ class DynamicGatingRouter(nn.Module):
         temperature: float = 1.0,
         dropout: float = 0.1,
         base_weights: Sequence[float] | None = None,
+        use_confidence: bool = True,
+        confidence_gain: float = 2.0,
     ) -> None:
         super().__init__()
         self.in_dim = in_dim
         self.num_experts = num_experts
         self.temperature = temperature
+        self.use_confidence = use_confidence
+        self.confidence_gain = confidence_gain
 
         if base_weights is not None:
             base_tensor = torch.tensor(base_weights, dtype=torch.float32)
             base_logits = torch.log(base_tensor + 1e-8)
+            base_weights_tensor = base_tensor
         else:
+            base_weights_tensor = torch.full((num_experts,), 1.0 / num_experts, dtype=torch.float32)
             base_logits = torch.zeros(num_experts, dtype=torch.float32)
+
+        self.register_buffer("base_weights", base_weights_tensor.view(1, num_experts))
         self.register_buffer("base_logits", base_logits.view(1, num_experts))
 
         self.net = nn.Sequential(
@@ -61,11 +73,38 @@ class DynamicGatingRouter(nn.Module):
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
 
+    def predict_risk(self, deg_features: Tensor) -> Tensor:
+        """Predict relative condition-dependent risk R_m(d) for each expert: (B, M)."""
+        return self.net(deg_features)
+
+    def compute_weights(
+        self, deg_features: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Compute final mixture weights, dynamic weights, and predicted relative risk.
+
+        Returns:
+            weights: (B, M) final blended weights (after confidence fallback).
+            w_dyn: (B, M) dynamic weights from predicted inverse risk.
+            pred_risk: (B, M) predicted relative risk.
+        """
+        pred_risk = self.predict_risk(deg_features)  # (B, M)
+        # Inverted risk offset: lower predicted risk -> higher logit
+        logits = self.base_logits - pred_risk / self.temperature
+        w_dyn = F.softmax(logits, dim=-1)
+
+        if self.use_confidence and self.num_experts > 1:
+            h_max = math.log(float(self.num_experts))
+            h = -(w_dyn * torch.log(w_dyn + 1e-8)).sum(dim=-1, keepdim=True)
+            alpha = torch.clamp(self.confidence_gain * (1.0 - h / h_max), 0.0, 1.0)
+            weights = (1.0 - alpha) * self.base_weights + alpha * w_dyn
+        else:
+            weights = w_dyn
+
+        return weights, w_dyn, pred_risk
+
     def forward(self, deg_features: Tensor) -> Tensor:
         """Compute routing weights w in Delta^{M-1}."""
-        delta = self.net(deg_features)
-        logits = self.base_logits + delta
-        weights = F.softmax(logits / self.temperature, dim=-1)
+        weights, _, _ = self.compute_weights(deg_features)
         return weights
 
 
@@ -103,18 +142,23 @@ class DynaMoFEDetector(nn.Module):
         self,
         deg_features: Tensor,
         expert_scores: Tensor,
-    ) -> tuple[Tensor, Tensor]:
+        return_risk: bool = False,
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, Tensor]:
         """Aggregate expert scores using degradation-aware dynamic weights.
 
         Args:
             deg_features: (B, in_dim) degradation vectors.
             expert_scores: (B, num_experts) raw expert decision margins.
+            return_risk: whether to return predicted risk tensor.
 
         Returns:
             fused_score: (B,) final authenticity decision margin.
             weights: (B, num_experts) dynamic weights assigned to each expert.
+            pred_risk: (B, num_experts) predicted risk (if return_risk=True).
         """
-        weights = self.router(deg_features)  # (B, M)
-        std_scores = self.standardize(expert_scores)  # (B, M)
-        fused_score = (weights * std_scores).sum(dim=-1)  # (B,)
+        weights, _, pred_risk = self.router.compute_weights(deg_features)
+        std_scores = self.standardize(expert_scores)
+        fused_score = (weights * std_scores).sum(dim=-1)
+        if return_risk:
+            return fused_score, weights, pred_risk
         return fused_score, weights

@@ -150,21 +150,25 @@ For multi-frame observations ($T > 1$), frame differences $\Delta_t = \frac{1}{H
 
 ---
 
-### 5. Dynamic Neural Router & Decision Fusion
+## 5. Dynamic Neural Router & Decision Fusion
 
-### 5.1 Router Architecture & Condition-Dependent Risk Formulation
-To dynamically adapt expert contributions under transmission distortion, the router $\mathcal{R}_\theta$ estimates condition-dependent expert risk $R_m(\mathbf{d}) = \mathbb{E}[\ell(s_m(X), y) \mid \mathcal{D}(X)=\mathbf{d}]$, mapping the standardized 16-D degradation signature $\mathbf{d}(X)$ to routing logits.
+### 5.1 Reliability-Supervised Risk Architecture & Confidence Fallback
+To dynamically adapt expert contributions under transmission distortion, the router $\mathcal{R}_\theta$ directly predicts condition-dependent expert risk:
+$$\hat{\mathbf{R}}(\mathbf{d}) = [\hat{R}_{\text{FCG}}, \hat{R}_{\text{TALL}}, \hat{R}_{\text{F3Net}}, \hat{R}_{\text{Xception}}] \in \mathbb{R}^M$$
+mapping the standardized 16-D physical degradation signature $\mathbf{d}(X)$ to predicted expert error.
 
 The network architecture is a 2-layer Multi-Layer Perceptron (MLP) with Layer Normalization on both input and hidden activations:
 $$\mathbf{h}_0 = \operatorname{LayerNorm}(\mathbf{d}(X))$$
 $$\mathbf{h}_1 = \operatorname{GELU}(\operatorname{LayerNorm}(W_1 \mathbf{h}_0 + \mathbf{b}_1))$$
-$$\Delta \mathbf{z} = W_2 \mathbf{h}_1 + \mathbf{b}_2 \in \mathbb{R}^M$$
+$$\hat{\mathbf{R}}(\mathbf{d}) = W_2 \mathbf{h}_1 + \mathbf{b}_2 \in \mathbb{R}^M$$
 
-To stabilize training and anchor routing around empirically optimal multi-domain synergies, the output logits are parameterized as an offset around a prior base logit vector $\mathbf{b}_0 = \log(\mathbf{w}_{\text{base}})$ (e.g. $[0.40, 0.20, 0.20, 0.20]$):
-$$\mathbf{z} = \mathbf{b}_0 + \Delta \mathbf{z}$$
+Dynamic weights are derived via inverse-risk Softmax anchored around the empirical multi-domain prior $\mathbf{w}_0 = [0.40, 0.20, 0.20, 0.20]$:
+$$\mathbf{w}_{\text{dyn}}(\mathbf{d}) = \operatorname{softmax}\left(\log(\mathbf{w}_0) - \frac{\hat{\mathbf{R}}(\mathbf{d})}{\tau}\right)$$
 
-The final dynamic mixture weights $\mathbf{w}(X) \in \Delta^{M-1}$ are generated via temperature-scaled Softmax:
-$$w_m(X) = \frac{\exp(z_m / \tau)}{\sum_{j=1}^M \exp(z_j / \tau)}, \quad \sum_{m=1}^M w_m(X) = 1, \quad w_m(X) \ge 0$$
+To prevent finite-sample estimation variance from corrupting confident baseline predictions, the model introduces an entropy-modulated confidence fallback:
+$$\alpha(\mathbf{d}) = \operatorname{clamp}\left(\gamma \left(1 - \frac{H(\mathbf{w}_{\text{dyn}})}{\log M}\right), 0, 1\right)$$
+$$\mathbf{w}(X) = (1 - \alpha(\mathbf{d}))\mathbf{w}_0 + \alpha(\mathbf{d})\mathbf{w}_{\text{dyn}}(\mathbf{d})$$
+where $H(\mathbf{w}) = -\sum_m w_m \log w_m$ measures routing entropy. When routing uncertainty is high ($\alpha \to 0$), the model safely defaults to the optimal static prior; when the physical signature detects strong expert divergence ($\alpha \to 1$), dynamic routing reallocates weights.
 
 ### 5.2 Margin Standardization
 Because each expert outputs raw logits with differing intrinsic scales and offsets, each raw score $s_m(X)$ is standardized using pre-computed canonical validation statistics:
@@ -180,13 +184,9 @@ The posterior probability of manipulation is computed via sigmoid: $P(\text{Fake
 
 ## 6. Training Objective & Leak-Free Cross-Validation
 
-The router parameters $\theta$ are trained using a joint risk minimization objective:
-$$\mathcal{L}(\theta) = \mathcal{L}_{\text{risk}}(\hat{\mathbf{r}}(\mathbf{d}), \mathbf{r}^*) + \lambda_{\text{margin}} \mathcal{L}_{\text{margin}}(m_{\text{DynaMoFE}}(X), y)$$
-
-1. **Condition-Dependent Expert Risk Loss ($\mathcal{L}_{\text{risk}}$):** The target expert risk is derived from the per-sample binary cross-entropy loss $\ell_m(X) = \ell_{\text{BCE}}(\tilde{s}_m(X), y)$ normalized across experts: $r_m^*(X) = \ell_m(X) - \bar{\ell}(X)$. The router is trained via Mean Squared Error to predict this relative risk:
-   $$\mathcal{L}_{\text{risk}} = \frac{1}{B}\sum_{i=1}^B \frac{1}{M}\sum_{m=1}^M (\Delta z_m(X_i) - (-\beta r_m^*(X_i)))^2$$
-   Experts with lower risk under the current degradation condition receive higher gating logits.
-2. **Fused Margin Loss ($\mathcal{L}_{\text{margin}}$):** Binary cross-entropy on the unified aggregated score $m_{\text{DynaMoFE}}(X)$ to optimize final classification boundary calibration.
+The router parameters $\theta$ are trained using direct Huber risk supervision coupled with fused margin cross-entropy without artificial diversity penalties ($\lambda_{\text{div}}=0$):
+$$\mathcal{L}(\theta) = \mathcal{L}_{\text{BCE}}(m_{\text{DynaMoFE}}(X), y) + \frac{\beta}{M}\sum_{m=1}^M \operatorname{Huber}(\hat{R}_m(\mathbf{d}), r_m^*)$$
+where $r_m^*(X) = \ell_m(X) - \bar{\ell}(X)$ represents the relative sample-level loss of expert $m$, and $\beta = 1.0$.
 
 ### 6.1 Leak-Free Source-Cluster Cross-Validation
 To eliminate identity-confounded shortcuts, training is conducted using **5-Fold Source-Cluster Cross-Validation** over the 70 source-identity clusters of FaceForensics++. All videos sharing a common original source identity reside in the same fold and are strictly segregated between training and validation. Score normalization statistics are fit strictly on training fold masks without access to test fold data.
@@ -207,31 +207,30 @@ Evaluated across 700 FaceForensics++ $C23$ test videos (140 real, 560 fake) acro
 | **FCG (Official CVPR 2025)** | 98.66 | 96.96 | 94.74 | 90.25 | 91.55 | 91.75 | 93.55 | 93.14 | 90.25 | 88.7\% |
 | **$\text{DynaMoFE}_{\text{static}}$ (Tri-Domain)** | 99.38 | 98.05 | 96.42 | 92.79 | 94.54 | 95.35 | 96.60 | 95.63 | 92.79 | 92.4\% |
 | **$\text{DynaMoFE}_{\text{static}}$ (Quad-Domain)** | **99.35** | **98.08** | **96.29** | **93.17** | **94.60** | **95.50** | **96.84** | **95.75** | **93.17** | **92.7\%** |
-| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.31 | 97.97 | 96.21 | 92.99 | 94.50 | 95.43 | 96.77 | 95.64 | 92.99 | 92.6\% |
+| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.33 | 98.02 | 96.23 | 93.07 | 94.57 | 95.41 | 96.79 | 95.68 | 93.07 | 92.6\% |
 
 ### 7.2 Key Findings & Rigorous Statistical Analysis
 
 1. **Multi-Domain Forensic Synergy Sets New SOTA:**
-   $\text{DynaMoFE}_{\text{static}}$ achieves **95.75\% sealed mean AUC** (Quad-Domain) and **95.63\%** (Tri-Domain), outperforming the previous best foundation model (FCG 93.14\%) by **+2.49 to +2.61 pp**, F3Net by **+4.38 to +4.50 pp**, and TALL by **+8.13 to +8.25 pp**. $\text{DynaMoFE}_{\text{adaptive}}$ achieves **95.64\% sealed mean AUC** (+2.51 pp over FCG).
+   $\text{DynaMoFE}_{\text{static}}$ achieves **95.75\% sealed mean AUC** (Quad-Domain) and **95.63\%** (Tri-Domain), outperforming the previous best foundation model (FCG 93.14\%) by **+2.49 to +2.61 pp**, F3Net by **+4.38 to +4.50 pp**, and TALL by **+8.13 to +8.25 pp**. $\text{DynaMoFE}_{\text{adaptive}}$ achieves **95.68\% sealed mean AUC** (+2.54 pp over FCG).
 2. **Worst-Case Codec Resilience (H.264 CRF 35):**
-   Under extreme bit-rate compression, $\text{DynaMoFE}_{\text{static}}$ achieves **93.17\% AUC**, surpassing FCG (90.25\%) by **+2.92 pp** and TALL (76.40\%) by **+16.77 pp**. $\text{DynaMoFE}_{\text{adaptive}}$ achieves **92.99\% AUC** (+2.74 pp over FCG, +16.59 pp over TALL).
-3. **Closing the Adaptive vs. Static Gap via Risk Routing:**
-   In earlier iterations, an aggressive Shannon entropy penalty ($\lambda_{\text{div}} = 0.5$) forced uniform expert weights ($0.25$ each), suppressing the high baseline accuracy of FCG ($\sim 40\%$ optimal weight) and degrading adaptive performance to $94.43\%$. Formulating routing as condition-dependent risk estimation centered on prior synergy logits $\mathbf{b}_0 = \log([0.40, 0.20, 0.20, 0.20])$ closed this gap, bringing adaptive out-of-fold generalization to **95.64\%**, within $0.11$ pp of optimal static fusion.
-4. **Exact 10,000-Replicate Paired Cluster Bootstrap Significance:**
+   Under extreme bit-rate compression, $\text{DynaMoFE}_{\text{static}}$ achieves **93.17\% AUC**, surpassing FCG (90.25\%) by **+2.92 pp** and TALL (76.40\%) by **+16.77 pp**. $\text{DynaMoFE}_{\text{adaptive}}$ achieves **93.07\% AUC** (+2.82 pp over FCG, +16.67 pp over TALL).
+3. **Sample-Level Oracle Headroom (+4.09 pp) & Complementarity:**
+   While standalone FCG reaches 93.14\% and static fusion reaches 95.75\%, the theoretical sample-level oracle upper bound achieves **99.84\% AUC** (+4.09 pp headroom). FCG and TALL disagree on 28.0\% of test videos ($r=0.610$), with FCG correctly rescuing 21.1\% of cases where TALL fails, and TALL rescuing 6.8\% of cases where FCG fails.
+4. **Zero-Shot Generalization to Unseen Codecs (Leave-One-Degradation-Out):**
+   When trained on 6 environments and evaluated on an unseen held-out codec, DynaMoFE achieves 98.08% on JPEG-40 (+1.12 pp over FCG), 96.29% on WebP-50 (+1.55 pp over FCG), 94.59% on H.265 (+3.04 pp over FCG), and 93.16% on H.264 (+2.91 pp over FCG), matching the static baseline without knowing the codec identity.
+5. **Exact 10,000-Replicate Paired Cluster Bootstrap Significance:**
    - **For $\text{DynaMoFE}_{\text{static}}$ (Quad-Domain):**
      * Clean vs FCG: $\Delta = +0.69$ pp (95\% CI: $[+0.21, +1.17]$, $p < 0.05$).
      * Clean vs TALL: $\Delta = +0.97$ pp (95\% CI: $[+0.18, +2.08]$, $p < 0.05$).
      * H.264 CRF 35 vs FCG: $\Delta = +2.92$ pp (95\% CI: $[+1.27, +4.50]$, $p < 0.001$).
      * H.264 CRF 35 vs TALL: $\Delta = +16.77$ pp (95\% CI: $[+13.59, +20.06]$, $p < 0.0001$).
    - **For $\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating):**
-     * Clean vs FCG: $\Delta = +0.66$ pp (95\% CI: $[+0.16, +1.15]$, $p < 0.05$).
-     * Clean vs TALL: $\Delta = +0.93$ pp (95\% CI: $[+0.16, +2.02]$, $p < 0.05$).
-     * Clean vs F3Net: $\Delta = +0.71$ pp (95\% CI: $[+0.22, +1.25]$, $p < 0.05$).
-     * Clean vs Xception: $\Delta = +0.76$ pp (95\% CI: $[+0.25, +1.32]$, $p < 0.05$).
-     * Clean vs ForensicsAdapter: $\Delta = +3.71$ pp (95\% CI: $[+2.47, +4.91]$, $p < 0.0001$).
-     * H.264 CRF 35 vs FCG: $\Delta = +2.74$ pp (95\% CI: $[+1.11, +4.30]$, $p < 0.001$).
-     * H.264 CRF 35 vs TALL: $\Delta = +16.59$ pp (95\% CI: $[+13.43, +19.85]$, $p < 0.0001$).
-   - **Adaptive Gating vs Static Quad:** Differences are bounded within $\sim 0.1$ pp across all environments (Clean: $-0.03$ pp, Sealed Mean: $-0.11$ pp, H.264: $-0.18$ pp).
+     * Clean vs FCG: $\Delta = +0.68$ pp (95\% CI: $[+0.19, +1.16]$, $p < 0.05$).
+     * Clean vs TALL: $\Delta = +0.95$ pp (95\% CI: $[+0.18, +2.04]$, $p < 0.05$).
+     * H.264 CRF 35 vs FCG: $\Delta = +2.82$ pp (95\% CI: $[+1.18, +4.39]$, $p < 0.001$).
+     * H.264 CRF 35 vs TALL: $\Delta = +16.67$ pp (95\% CI: $[+13.51, +19.93]$, $p < 0.0001$).
+   - **Adaptive Gating vs Static Quad:** Differences are bounded within $\sim 0.07$ pp across all environments (Clean: $-0.01$ pp, Sealed Mean: $-0.07$ pp, H.264: $-0.10$ pp).
 5. **Relation to 2026 Literature:**
    - **TriMoE (CVPRW 2026):** Employs spatial, spectral, and temporal sub-networks with top-$k$ sparse routing based on *latent semantic tokens*. DynaMoFE differs fundamentally by conditioning routing on *deterministic physical transmission degradation signatures* (spectral decay, 8-pixel block boundary step jumps, temporal motion differences) that quantify transmission channel distortion directly.
    - **WGN (CVPRW 2026):** Demonstrates wavelet transform efficacy for multi-scale frequency features.

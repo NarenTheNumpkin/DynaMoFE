@@ -1,7 +1,8 @@
-"""Train and evaluate DynaMoFE Dynamic Gating Router.
+"""Train the DynaMoFE Dynamic Neural Router (v2 Reliability-Supervised).
 
-Uses source-identity cluster cross-validation to ensure leak-free evaluation.
-Optimizes binary classification margin while maintaining expert entropy/diversity.
+Trains a condition-dependent expert risk predictor conditioned on the 16-D physical
+degradation signature vector with direct Huber risk supervision and confidence-gated
+static prior fallback.
 """
 
 from __future__ import annotations
@@ -13,70 +14,50 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score, roc_curve
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
 from dynamofe.router import DynamicGatingRouter, DynaMoFEDetector
 
-
-# Flexible root resolution: works standalone in DynaMoFE repo or inside deepfake-research
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PARENT_WORKSPACE = Path(__file__).resolve().parents[2] if len(Path(__file__).resolve().parents) > 2 else REPO_ROOT
-
-if (REPO_ROOT / "data/predictions").exists() or (REPO_ROOT / "outputs/degradations").exists():
-    PROJECT_ROOT = REPO_ROOT
-    OUTPUT_ROOT = REPO_ROOT / "outputs"
-    PRED_DIR = REPO_ROOT / "data/predictions" if (REPO_ROOT / "data/predictions").exists() else REPO_ROOT / "outputs"
-else:
-    PROJECT_ROOT = Path(__file__).resolve().parents[3]
-    OUTPUT_ROOT = PROJECT_ROOT / "outputs/dynamofe"
-    PRED_DIR = PROJECT_ROOT / "outputs/external_codec_robustness_benchmark_v1/predictions/external"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_ROOT = PROJECT_ROOT / "data"
+OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 
 
-def load_benchmark_data():
-    """Load matched prediction tables and degradation features."""
-    pred_dir = PRED_DIR
-    deg_file = OUTPUT_ROOT / "degradations/ffpp_test_degradations.pt"
-
+def load_benchmark_data() -> tuple[dict[str, Any], dict[str, pd.DataFrame], list[str], np.ndarray, list[str]]:
+    """Load pre-extracted degradations and expert predictions."""
+    deg_file = OUTPUT_ROOT / "degradations" / "ffpp_test_degradations.pt"
     if not deg_file.exists():
-        raise FileNotFoundError(f"Degradations file not found: {deg_file}")
+        deg_file = DATA_ROOT / "degradations" / "ffpp_test_degradations.pt"
+    if not deg_file.exists():
+        raise FileNotFoundError(f"Degradation file not found: {deg_file}")
 
-    deg_data = torch.load(deg_file, map_location="cpu", weights_only=False)
-    environments = deg_data["environments"]
-    paths = deg_data["paths"]
-    labels = np.array(deg_data["labels"])
+    deg_data = torch.load(deg_file, weights_only=False)
+    environments = list(deg_data["degradations"].keys())
+    labels = np.array(deg_data["labels"], dtype=np.float32)
+    source_groups = [p.split("/")[-1].split("_")[0] for p in deg_data["paths"]]
 
-    # Load predictions for all experts
-    fcg_df = pd.read_csv(pred_dir / "fcg_official.csv")
-    tall_df = pd.read_csv(pred_dir / "tall_local_seed42.csv")
-    f3net_df = pd.read_csv(pred_dir / "f3net_deepfakebench.csv")
-    xcep_df = pd.read_csv(pred_dir / "xception_deepfakebench.csv")
-    fa_df = pd.read_csv(pred_dir / "forensics_adapter_official.csv")
-
-    source_groups = fcg_df[fcg_df["codec_environment"] == "canonical"].sort_values("video_id")["source_identity"].values
-
-    expert_dfs = {
-        "fcg": fcg_df,
-        "tall": tall_df,
-        "f3net": f3net_df,
-        "xception": xcep_df,
-        "forensics_adapter": fa_df,
+    pred_files = {
+        "fcg": DATA_ROOT / "predictions" / "fcg_official.csv",
+        "tall": DATA_ROOT / "predictions" / "tall_local_seed42.csv",
+        "f3net": DATA_ROOT / "predictions" / "f3net_deepfakebench.csv",
+        "xception": DATA_ROOT / "predictions" / "xception_deepfakebench.csv",
     }
+    expert_dfs = {k: pd.read_csv(p) for k, p in pred_files.items() if p.exists()}
 
     return deg_data, expert_dfs, environments, labels, source_groups
 
 
-def compute_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, float]:
-    auc = roc_auc_score(y_true, scores) * 100.0
-    ap = average_precision_score(y_true, scores) * 100.0
-    # Equal error rate
-    from sklearn.metrics import roc_curve
-    fpr, tpr, thresholds = roc_curve(y_true, scores)
-    fnr = 1 - tpr
-    eer_idx = np.nanargmin(np.abs(fpr - fnr))
-    eer = 0.5 * (fpr[eer_idx] + fnr[eer_idx]) * 100.0
+def compute_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]:
+    """Compute ROC-AUC, AP, and EER."""
+    auc = roc_auc_score(y_true, y_score) * 100.0
+    ap = average_precision_score(y_true, y_score) * 100.0
+    fpr, tpr, thresholds = roc_curve(y_true, y_score)
+    fnr = 1.0 - tpr
+    idx = np.nanargmin(np.abs(fpr - fnr))
+    eer = float((fpr[idx] + fnr[idx]) / 2.0) * 100.0
     return {"auc": float(auc), "ap": float(ap), "eer": float(eer)}
 
 
@@ -105,11 +86,11 @@ def train_router_epoch(
     loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    alpha_fused: float = 0.5,
+    beta_risk: float = 1.0,
 ) -> float:
     model.train()
     total_loss = 0.0
-    mse_criterion = nn.MSELoss()
+    huber_criterion = nn.HuberLoss(delta=1.0)
 
     for deg, scores, labels, risks in loader:
         deg = deg.to(device)
@@ -118,16 +99,15 @@ def train_router_epoch(
         risks = risks.to(device)
 
         optimizer.zero_grad()
-        delta = model.router.net(deg)  # (B, M)
-        # Condition-dependent expert risk MSE loss (delta approximates negative relative risk)
-        loss_risk = mse_criterion(delta, -risks)
+        fused_scores, weights, pred_risk = model(deg, scores, return_risk=True)
 
-        # Fused decision margin loss
-        fused_scores, weights = model(deg, scores)
-        y_sign = 2.0 * labels - 1.0
-        loss_fused = F.relu(1.0 - y_sign * fused_scores).mean()
+        # Condition-dependent expert risk supervision
+        loss_risk = huber_criterion(pred_risk, risks)
 
-        loss = loss_risk + alpha_fused * loss_fused
+        # Fused decision margin cross-entropy loss
+        loss_bce = F.binary_cross_entropy_with_logits(fused_scores, labels)
+
+        loss = loss_bce + beta_risk * loss_risk
         loss.backward()
         optimizer.step()
 
@@ -158,7 +138,7 @@ def evaluate_model(
 def run_cross_validation(
     experts: Sequence[str] = ("fcg", "tall", "f3net", "xception"),
     num_folds: int = 5,
-    num_epochs: int = 20,
+    num_epochs: int = 25,
     lr: float = 1e-3,
     hidden_dim: int = 64,
     seed: int = 42,
@@ -191,7 +171,7 @@ def run_cross_validation(
     oof_predictions = {env: np.zeros(N_videos, dtype=np.float32) for env in environments}
     oof_weights = {env: np.zeros((N_videos, M), dtype=np.float32) for env in environments}
 
-    print(f"\n--- Starting {num_folds}-Fold Cluster Cross-Validation for DynaMoFE (Experts: {experts}) ---")
+    print(f"\n--- Starting {num_folds}-Fold Cluster Cross-Validation for DynaMoFE v2 (Experts: {experts}) ---")
 
     for fold_idx in range(num_folds):
         val_clusters = set(fold_groups[fold_idx])
@@ -208,17 +188,23 @@ def run_cross_validation(
         train_scs = []
         train_lbs = []
         train_risks = []
-        y_train_sign = 2.0 * labels[train_mask] - 1.0
+        y_train_tensor = torch.tensor(labels[train_mask], dtype=torch.float32)
 
         for env in environments:
             d_env = deg_data["degradations"][env][train_mask]
             s_env = env_scores[env][train_mask]
             # Standardize expert scores using training fold canonical stats
             s_std = (s_env - np.array(fold_means)) / (np.array(fold_stds) + 1e-7)
-            # Sample-level margin error per expert: max(0, 1 - y_sign * s_std)
-            r_env = np.maximum(0.0, 1.0 - y_train_sign[:, None] * s_std)
-            # Relative risk centered around mean expert risk per sample
-            r_rel = r_env - r_env.mean(axis=1, keepdims=True)
+
+            # Per-expert BCE loss
+            s_std_t = torch.tensor(s_std, dtype=torch.float32)
+            exp_losses = torch.stack([
+                F.binary_cross_entropy_with_logits(s_std_t[:, m], y_train_tensor, reduction='none')
+                for m in range(M)
+            ], dim=1).numpy()
+
+            # Target relative risk centered around mean expert loss per sample
+            r_rel = exp_losses - exp_losses.mean(axis=1, keepdims=True)
 
             train_degs.append(d_env)
             train_scs.append(s_env)
@@ -240,12 +226,19 @@ def run_cross_validation(
         else:
             base_weights = [1.0 / M] * M
 
-        router = DynamicGatingRouter(in_dim=K, num_experts=M, hidden_dim=hidden_dim, base_weights=base_weights).to(device)
+        router = DynamicGatingRouter(
+            in_dim=K,
+            num_experts=M,
+            hidden_dim=hidden_dim,
+            base_weights=base_weights,
+            use_confidence=True,
+            confidence_gain=2.0,
+        ).to(device)
         detector = DynaMoFEDetector(router, expert_names=experts, means=fold_means, stds=fold_stds).to(device)
         optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-3)
 
         for epoch in range(num_epochs):
-            train_loss = train_router_epoch(detector, train_loader, optimizer, device)
+            train_loss = train_router_epoch(detector, train_loader, optimizer, device, beta_risk=1.0)
 
         # Evaluate out-of-fold for this fold on all environments
         for env in environments:
@@ -303,6 +296,128 @@ def run_cross_validation(
     return results
 
 
+def run_leave_one_degradation_out(
+    experts: Sequence[str] = ("fcg", "tall", "f3net", "xception"),
+    num_epochs: int = 20,
+    lr: float = 1e-3,
+    hidden_dim: int = 64,
+    seed: int = 42,
+    device_str: str = "cuda" if torch.cuda.is_available() else "cpu",
+) -> pd.DataFrame:
+    """Evaluate zero-shot unseen codec generalization by holding out each codec in turn."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    device = torch.device(device_str)
+
+    deg_data, expert_dfs, environments, labels, _ = load_benchmark_data()
+    M = len(experts)
+    K = deg_data["degradations"]["canonical"].shape[-1]
+    w_static = np.array([0.40, 0.20, 0.20, 0.20] if M == 4 else [1.0 / M] * M)
+
+    # Reference canonical stats
+    can_means = [float(expert_dfs[exp][expert_dfs[exp]["codec_environment"] == "canonical"]["score"].mean()) for exp in experts]
+    can_stds = [float(expert_dfs[exp][expert_dfs[exp]["codec_environment"] == "canonical"]["score"].std()) for exp in experts]
+
+    env_scores = {}
+    for env in environments:
+        cols = []
+        for exp in experts:
+            df = expert_dfs[exp]
+            sub = df[df["codec_environment"] == env].sort_values("video_id")
+            cols.append(sub["score"].values)
+        env_scores[env] = np.stack(cols, axis=1)
+
+    held_out_candidates = [e for e in environments if e != "canonical"]
+    rows = []
+
+    print("\n=======================================================")
+    print("Running Leave-One-Degradation-Out Evaluation:")
+    print("=======================================================")
+
+    for held_out in held_out_candidates:
+        train_envs = [e for e in environments if e != held_out]
+
+        train_degs = []
+        train_scs = []
+        train_lbs = []
+        train_risks = []
+        y_tensor = torch.tensor(labels, dtype=torch.float32)
+
+        for env in train_envs:
+            d_env = deg_data["degradations"][env]
+            s_env = env_scores[env]
+            s_std = (s_env - np.array(can_means)) / (np.array(can_stds) + 1e-7)
+
+            s_std_t = torch.tensor(s_std, dtype=torch.float32)
+            exp_losses = torch.stack([
+                F.binary_cross_entropy_with_logits(s_std_t[:, m], y_tensor, reduction='none')
+                for m in range(M)
+            ], dim=1).numpy()
+            r_rel = exp_losses - exp_losses.mean(axis=1, keepdims=True)
+
+            train_degs.append(d_env)
+            train_scs.append(s_env)
+            train_lbs.append(labels)
+            train_risks.append(r_rel)
+
+        train_degs = np.concatenate(train_degs, axis=0)
+        train_scs = np.concatenate(train_scs, axis=0)
+        train_lbs = np.concatenate(train_lbs, axis=0)
+        train_risks = np.concatenate(train_risks, axis=0)
+
+        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks)
+        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
+
+        router = DynamicGatingRouter(
+            in_dim=K,
+            num_experts=M,
+            hidden_dim=hidden_dim,
+            base_weights=w_static.tolist(),
+            use_confidence=True,
+            confidence_gain=2.0,
+        ).to(device)
+        detector = DynaMoFEDetector(router, expert_names=experts, means=can_means, stds=can_stds).to(device)
+        optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-3)
+
+        for epoch in range(num_epochs):
+            train_router_epoch(detector, train_loader, optimizer, device, beta_risk=1.0)
+
+        # Evaluate on the unseen held-out codec
+        test_deg = deg_data["degradations"][held_out]
+        test_sc = env_scores[held_out]
+        metrics_dyn, preds_dyn, wts_dyn = evaluate_model(detector, test_deg, test_sc, labels, device)
+
+        # Baseline: Static Quad Fusion
+        s_std_test = (test_sc - np.array(can_means)) / (np.array(can_stds) + 1e-7)
+        s_static = (w_static.reshape(1, -1) * s_std_test).sum(axis=-1)
+        metrics_static = compute_metrics(labels, s_static)
+
+        # Baseline: FCG Alone
+        metrics_fcg = compute_metrics(labels, test_sc[:, 0])
+
+        delta_static = metrics_dyn["auc"] - metrics_static["auc"]
+        delta_fcg = metrics_dyn["auc"] - metrics_fcg["auc"]
+        mean_w = wts_dyn.mean(axis=0).tolist()
+
+        row = {
+            "held_out_codec": held_out,
+            "fcg_auc": metrics_fcg["auc"],
+            "static_quad_auc": metrics_static["auc"],
+            "dynamofe_zero_shot_auc": metrics_dyn["auc"],
+            "delta_vs_static": delta_static,
+            "delta_vs_fcg": delta_fcg,
+            "mean_fcg_weight": mean_w[0],
+            "mean_tall_weight": mean_w[1],
+            "mean_f3net_weight": mean_w[2],
+            "mean_xception_weight": mean_w[3],
+        }
+        rows.append(row)
+        print(f"Held-Out Codec: {held_out:<28} | FCG: {metrics_fcg['auc']:.2f}% | Static: {metrics_static['auc']:.2f}% | DynaMoFE (Zero-Shot): {metrics_dyn['auc']:.2f}% (Delta: {delta_static:+.2f} pp)")
+
+    df_lodo = pd.DataFrame(rows)
+    return df_lodo
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experts", nargs="+", default=["fcg", "tall", "f3net", "xception"])
@@ -325,3 +440,14 @@ if __name__ == "__main__":
     with open(out_file, "w") as f:
         json.dump(res, f, indent=2)
     print(f"Saved results to {out_file}")
+
+    # Run Leave-One-Degradation-Out
+    df_lodo = run_leave_one_degradation_out(
+        experts=args.experts,
+        num_epochs=args.epochs,
+        lr=args.lr,
+        seed=args.seed,
+    )
+    lodo_file = OUTPUT_ROOT / "dynamofe_leave_one_out.csv"
+    df_lodo.to_csv(lodo_file, index=False)
+    print(f"Saved leave-one-out results to {lodo_file}")

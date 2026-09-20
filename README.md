@@ -96,17 +96,22 @@ flowchart TD
 | **FCG (Official CVPR 2025)** | 98.66 | 96.96 | 94.74 | 90.25 | 91.55 | 91.75 | 93.55 | 93.14 | 90.25 | 88.7% |
 | **$\text{DynaMoFE}_{\text{static}}$ (Tri-Domain)** | 99.38 | 98.05 | 96.42 | 92.79 | 94.54 | 95.35 | 96.60 | 95.63 | 92.79 | 92.4% |
 | **$\text{DynaMoFE}_{\text{static}}$ (Quad-Domain)** | **99.35** | **98.08** | **96.29** | **93.17** | **94.60** | **95.50** | **96.84** | **95.75** | **93.17** | **92.7%** |
-| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.31 | 97.97 | 96.21 | 92.99 | 94.50 | 95.43 | 96.77 | 95.64 | 92.99 | 92.6% |
+| **$\text{DynaMoFE}_{\text{adaptive}}$ (OOF Gating)** | 99.33 | 98.02 | 96.23 | 93.07 | 94.57 | 95.41 | 96.79 | 95.68 | 93.07 | 92.6% |
 
 ### Key Empirical Highlights:
-* **Multi-Domain Forensic Synergy SOTA:** $\text{DynaMoFE}_{\text{static}}$ achieves **95.75% sealed mean AUC** (+2.61 pp over FCG 93.14%, +4.50 pp over F3Net, +8.25 pp over TALL). $\text{DynaMoFE}_{\text{adaptive}}$ achieves **95.64% sealed mean AUC** (+2.51 pp over FCG).
-* **Worst-Case Robustness (H.264 CRF 35):** $\text{DynaMoFE}_{\text{static}}$ reaches **93.17% AUC** (+2.92 pp over FCG 90.25%, +16.77 pp over TALL 76.40%). $\text{DynaMoFE}_{\text{adaptive}}$ reaches **92.99% AUC** (+2.74 pp over FCG, +16.59 pp over TALL).
-* **Condition-Dependent Expert Risk Routing:** Formulating gating as condition-dependent expert risk $R_m(\mathbf{d}) = \mathbb{E}[\ell(s_m(X), y) \mid \mathcal{D}(X)=\mathbf{d}]$ with softmax weights $w_m(\mathbf{d}) \propto \exp[-R_m(\mathbf{d})/\tau]$ anchored to multi-domain prior biases $\mathbf{b}_0 = \log([0.40, 0.20, 0.20, 0.20])$ and trained with leak-free fold normalization enables adaptive gating to match optimal static fusion (95.64% vs. 95.75% sealed mean) while dynamically reallocating weights based on physical degradation cues.
+* **Multi-Domain Forensic Synergy SOTA:** $\text{DynaMoFE}_{\text{static}}$ achieves **95.75% sealed mean AUC** (+2.61 pp over FCG 93.14%, +4.50 pp over F3Net, +8.25 pp over TALL). $\text{DynaMoFE}_{\text{adaptive}}$ achieves **95.68% sealed mean AUC** (+2.54 pp over FCG).
+* **Worst-Case Robustness (H.264 CRF 35):** $\text{DynaMoFE}_{\text{static}}$ reaches **93.17% AUC** (+2.92 pp over FCG 90.25%, +16.77 pp over TALL 76.40%). $\text{DynaMoFE}_{\text{adaptive}}$ reaches **93.07% AUC** (+2.82 pp over FCG, +16.67 pp over TALL).
+* **Sample-Level Oracle Headroom (+4.09 pp):** While the strongest standalone foundation model (FCG) reaches 93.14% and static fusion reaches 95.75%, the theoretical sample-level oracle upper bound achieves **99.84% AUC**, confirming rich conditional complementarity across heterogeneous expert domains (FCG and TALL disagree on 28.0% of test videos).
+* **Reliability-Supervised Risk Routing with Confidence Fallback:** The router directly predicts condition-dependent expert risk $\hat{\mathbf{R}}(\mathbf{d})$ trained via Huber loss without artificial diversity penalties ($\lambda_{\text{div}}=0$), with entropy-modulated static fallback: $\mathbf{w}(X) = (1 - \alpha(X))\mathbf{w}_0 + \alpha(X)\mathbf{w}_{\text{dyn}}(X)$.
+* **Zero-Shot Unseen Codec Generalization (Leave-One-Degradation-Out):** When trained on 6 environments and evaluated on a held-out codec never observed during training, DynaMoFE matches or exceeds static fusion while outperforming standalone models:
+  * **Held-out H.265 (CRF 32):** **94.59%** (+3.04 pp over FCG 91.55%).
+  * **Held-out WebP (Q=50):** **96.29%** (+1.55 pp over FCG 94.74%).
+  * **Held-out JPEG (Q=40):** **98.08%** (+1.12 pp over FCG 96.96%).
+  * **Held-out H.264 (CRF 35):** **93.16%** (+2.91 pp over FCG 90.25%).
 * **Exact 10,000-Replicate Paired Cluster Bootstrap Significance:**
   * Both $\text{DynaMoFE}_{\text{static}}$ and $\text{DynaMoFE}_{\text{adaptive}}$ achieve strictly positive $95\%$ confidence intervals against all external baselines across all environments ($p < 0.05$ on clean; $p < 0.001$ on compressed codecs).
-  * Against FCG on clean canonical video: $\text{DynaMoFE}_{\text{adaptive}}$ achieves $+0.66$ pp ($95\%$ CI: $[+0.16, +1.15]$, $p < 0.05$); $\text{DynaMoFE}_{\text{static}}$ achieves $+0.69$ pp ($95\%$ CI: $[+0.21, +1.17]$, $p < 0.05$).
-  * Against FCG on H.264 CRF 35: $\text{DynaMoFE}_{\text{adaptive}}$ achieves $+2.74$ pp ($95\%$ CI: $[+1.11, +4.30]$, $p < 0.001$); $\text{DynaMoFE}_{\text{static}}$ achieves $+2.92$ pp ($95\%$ CI: $[+1.27, +4.50]$, $p < 0.001$).
-  * Adaptive Gating vs. Static Quad: The difference is tightly bounded within $\sim 0.1$ pp across all environments (Clean $\Delta = -0.03$ pp, Sealed Mean $\Delta = -0.11$ pp, H.264 $\Delta = -0.18$ pp).
+  * Against FCG on clean canonical video: $\text{DynaMoFE}_{\text{adaptive}}$ achieves $+0.68$ pp ($95\%$ CI: $[+0.19, +1.16]$, $p < 0.05$); $\text{DynaMoFE}_{\text{static}}$ achieves $+0.69$ pp ($95\%$ CI: $[+0.21, +1.17]$, $p < 0.05$).
+  * Against FCG on H.264 CRF 35: $\text{DynaMoFE}_{\text{adaptive}}$ achieves $+2.82$ pp ($95\%$ CI: $[+1.18, +4.39]$, $p < 0.001$).
 * **Relation to 2026 Literature:** Evaluated alongside 2026 advances including TriMoE (CVPRW 2026), WGN (CVPRW 2026), UMCL (IJCV 2026), GenD (CVPR 2026), and QTFP (2026). In contrast to TriMoE's latent feature routing, DynaMoFE routes via non-semantic physical degradation signatures.
 
 ---
