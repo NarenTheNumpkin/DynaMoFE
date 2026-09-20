@@ -86,18 +86,18 @@ class RouterDataset(torch.utils.data.Dataset):
         degradations: np.ndarray,
         expert_scores: np.ndarray,
         labels: np.ndarray,
-        groups: np.ndarray | None = None,
+        risks: np.ndarray,
     ) -> None:
         self.degradations = torch.tensor(degradations, dtype=torch.float32)
         self.expert_scores = torch.tensor(expert_scores, dtype=torch.float32)
         self.labels = torch.tensor(labels, dtype=torch.float32)
-        self.groups = groups
+        self.risks = torch.tensor(risks, dtype=torch.float32)
 
     def __len__(self) -> int:
         return len(self.labels)
 
     def __getitem__(self, idx: int):
-        return self.degradations[idx], self.expert_scores[idx], self.labels[idx]
+        return self.degradations[idx], self.expert_scores[idx], self.labels[idx], self.risks[idx]
 
 
 def train_router_epoch(
@@ -105,30 +105,29 @@ def train_router_epoch(
     loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    lambda_div: float = 0.5,
+    alpha_fused: float = 0.5,
 ) -> float:
     model.train()
     total_loss = 0.0
-    criterion = nn.BCEWithLogitsLoss()
+    mse_criterion = nn.MSELoss()
 
-    for deg, scores, labels in loader:
+    for deg, scores, labels, risks in loader:
         deg = deg.to(device)
         scores = scores.to(device)
         labels = labels.to(device)
+        risks = risks.to(device)
 
         optimizer.zero_grad()
+        delta = model.router.net(deg)  # (B, M)
+        # Condition-dependent expert risk MSE loss (delta approximates negative relative risk)
+        loss_risk = mse_criterion(delta, -risks)
+
+        # Fused decision margin loss
         fused_scores, weights = model(deg, scores)
+        y_sign = 2.0 * labels - 1.0
+        loss_fused = F.relu(1.0 - y_sign * fused_scores).mean()
 
-        # Classification loss
-        bce_loss = criterion(fused_scores, labels)
-
-        # Diversity loss: encourage average weights across batch to have high entropy
-        mean_weights = weights.mean(dim=0) + 1e-8
-        entropy = -(mean_weights * torch.log(mean_weights)).sum()
-        max_entropy = np.log(weights.shape[-1])
-        div_loss = (max_entropy - entropy)  # minimize distance to uniform
-
-        loss = bce_loss + lambda_div * div_loss
+        loss = loss_risk + alpha_fused * loss_fused
         loss.backward()
         optimizer.step()
 
@@ -160,9 +159,8 @@ def run_cross_validation(
     experts: Sequence[str] = ("fcg", "tall", "f3net", "xception"),
     num_folds: int = 5,
     num_epochs: int = 20,
-    lr: float = 5e-4,
+    lr: float = 1e-3,
     hidden_dim: int = 64,
-    lambda_div: float = 0.5,
     seed: int = 42,
     device_str: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> dict[str, Any]:
@@ -179,8 +177,7 @@ def run_cross_validation(
     M = len(experts)
     K = deg_data["degradations"]["canonical"].shape[-1]
 
-    # Pre-extract scores and degradations into unified arrays per environment
-    # env -> (700, M)
+    # Pre-extract scores into unified arrays per environment: env -> (700, M)
     env_scores = {}
     for env in environments:
         cols = []
@@ -189,11 +186,6 @@ def run_cross_validation(
             sub = df[df["codec_environment"] == env].sort_values("video_id")
             cols.append(sub["score"].values)
         env_scores[env] = np.stack(cols, axis=1)  # (700, M)
-
-    # Compute standardization stats across canonical clean environment
-    canonical_scores = env_scores["canonical"]
-    means = canonical_scores.mean(axis=0).tolist()
-    stds = canonical_scores.std(axis=0).tolist()
 
     # Out-of-fold prediction storage: env -> (700,)
     oof_predictions = {env: np.zeros(N_videos, dtype=np.float32) for env in environments}
@@ -206,20 +198,39 @@ def run_cross_validation(
         train_mask = np.array([g not in val_clusters for g in source_groups])
         val_mask = ~train_mask
 
+        # Clean fold-internal canonical stats for leak-free score standardization
+        train_can_scs = env_scores["canonical"][train_mask]
+        fold_means = train_can_scs.mean(axis=0).tolist()
+        fold_stds = train_can_scs.std(axis=0).tolist()
+
         # Collect training data across all environments for the training clusters
         train_degs = []
         train_scs = []
         train_lbs = []
+        train_risks = []
+        y_train_sign = 2.0 * labels[train_mask] - 1.0
+
         for env in environments:
-            train_degs.append(deg_data["degradations"][env][train_mask])
-            train_scs.append(env_scores[env][train_mask])
+            d_env = deg_data["degradations"][env][train_mask]
+            s_env = env_scores[env][train_mask]
+            # Standardize expert scores using training fold canonical stats
+            s_std = (s_env - np.array(fold_means)) / (np.array(fold_stds) + 1e-7)
+            # Sample-level margin error per expert: max(0, 1 - y_sign * s_std)
+            r_env = np.maximum(0.0, 1.0 - y_train_sign[:, None] * s_std)
+            # Relative risk centered around mean expert risk per sample
+            r_rel = r_env - r_env.mean(axis=1, keepdims=True)
+
+            train_degs.append(d_env)
+            train_scs.append(s_env)
             train_lbs.append(labels[train_mask])
+            train_risks.append(r_rel)
 
         train_degs = np.concatenate(train_degs, axis=0)
         train_scs = np.concatenate(train_scs, axis=0)
         train_lbs = np.concatenate(train_lbs, axis=0)
+        train_risks = np.concatenate(train_risks, axis=0)
 
-        train_ds = RouterDataset(train_degs, train_scs, train_lbs)
+        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks)
         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
 
         if M == 4:
@@ -230,11 +241,11 @@ def run_cross_validation(
             base_weights = [1.0 / M] * M
 
         router = DynamicGatingRouter(in_dim=K, num_experts=M, hidden_dim=hidden_dim, base_weights=base_weights).to(device)
-        detector = DynaMoFEDetector(router, expert_names=experts, means=means, stds=stds).to(device)
+        detector = DynaMoFEDetector(router, expert_names=experts, means=fold_means, stds=fold_stds).to(device)
         optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-3)
 
         for epoch in range(num_epochs):
-            train_loss = train_router_epoch(detector, train_loader, optimizer, device, lambda_div=lambda_div)
+            train_loss = train_router_epoch(detector, train_loader, optimizer, device)
 
         # Evaluate out-of-fold for this fold on all environments
         for env in environments:

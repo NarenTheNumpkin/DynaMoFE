@@ -16,9 +16,12 @@ import torch.nn.functional as F
 
 
 class DynamicGatingRouter(nn.Module):
-    """Predicts instance-level mixture weights across M forensic experts.
+    """Predicts condition-dependent expert risk and mixture weights across M forensic experts.
 
-    Conditioned on the K-dimensional video degradation signature.
+    Conditioned on the K-dimensional video degradation signature d:
+        R_m(d) = E[l(s_m(X), y) | D(X) = d]
+        w_m(d) propto exp(-R_m(d) / tau)
+    anchored around base synergy priors w_0 in Delta^{M-1}.
     """
 
     def __init__(
@@ -43,6 +46,7 @@ class DynamicGatingRouter(nn.Module):
         self.register_buffer("base_logits", base_logits.view(1, num_experts))
 
         self.net = nn.Sequential(
+            nn.LayerNorm(in_dim),
             nn.Linear(in_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),

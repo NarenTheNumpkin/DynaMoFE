@@ -3,8 +3,8 @@
 Extracts deterministic, physical signal-degradation statistics from video frames
 without relying on semantic labels:
 1. 2D Spectral energy roll-off (quantization and blur detection)
-2. Block boundary discontinuity (JPEG/MPEG 8x8 blockiness metric)
-3. Inter-frame temporal motion entropy and difference variance
+2. Block boundary discontinuity (8-pixel periodic boundary artifact indicator associated with block-based compression)
+3. Inter-frame temporal difference statistics (mean, standard deviation, and peak)
 4. Total variation and spatial gradient energy
 5. Dynamic range, contrast, and pixel clipping statistics
 """
@@ -23,12 +23,12 @@ class DegradationSignatureExtractor:
     FEATURE_NAMES = [
         "hf_spectral_ratio",       # Ratio of high-frequency to total power
         "mf_spectral_ratio",       # Ratio of mid-frequency to total power
-        "spectral_decay_slope",    # Log-frequency power spectral decay rate
-        "blockiness_ratio_h",      # Horizontal 8x8 block boundary discontinuity
-        "blockiness_ratio_v",      # Vertical 8x8 block boundary discontinuity
-        "blockiness_mean",         # Average blockiness
+        "spectral_decay_slope",    # Endpoint log-frequency power spectral decay rate across 4 rings
+        "blockiness_ratio_h",      # Horizontal 8-pixel periodic block boundary discontinuity
+        "blockiness_ratio_v",      # Vertical 8-pixel periodic block boundary discontinuity
+        "blockiness_mean",         # Average 8-pixel periodic block boundary discontinuity
         "temporal_diff_mean",      # Mean inter-frame difference (motion magnitude)
-        "temporal_diff_std",       # Inter-frame difference variance
+        "temporal_diff_std",       # Inter-frame difference standard deviation
         "temporal_diff_max",       # Peak inter-frame change
         "spatial_tv_norm",         # Total variation (spatial edge energy)
         "grad_magnitude_mean",     # Mean spatial gradient
@@ -94,16 +94,17 @@ class DegradationSignatureExtractor:
         hf_ratio = (power[hf_mask].sum() / total_power).clamp(0.0, 1.0)
         mf_ratio = (power[mf_mask].sum() / total_power).clamp(0.0, 1.0)
 
-        # Estimate decay slope: mean power in 4 frequency rings
+        # Estimate decay slope: endpoint spectral slope across 4 frequency rings
         ring_powers = []
         for r_min, r_max in [(0.1, 0.25), (0.25, 0.45), (0.45, 0.65), (0.65, 0.85)]:
             ring_mask = (r >= r_min) & (r < r_max)
             val = power[ring_mask].mean() + 1e-12
             ring_powers.append(torch.log(val))
         ring_powers = torch.stack(ring_powers)
+        # Endpoint spectral decay rate across 3 octave intervals
         decay_slope = (ring_powers[-1] - ring_powers[0]) / 3.0
 
-        # 2. Blockiness Boundary Discontinuity (8x8 grid boundary jump)
+        # 2. Block Boundary Discontinuity (8-pixel periodic boundary indicator capturing block-transform boundary artifacts)
         grid = 8
         boundary_cols = torch.arange(grid - 1, S - 1, grid, device=device)
         internal_cols = torch.arange(grid // 2 - 1, S - 1, grid, device=device)
@@ -120,7 +121,7 @@ class DegradationSignatureExtractor:
         blockiness_v = (b_jump_v / i_jump_v).clamp(0.0, 10.0)
         blockiness_mean = 0.5 * (blockiness_h + blockiness_v)
 
-        # 3. Inter-Frame Temporal Differences
+        # 3. Inter-Frame Temporal Difference Statistics (mean, standard deviation, peak)
         if T > 1:
             frame_diffs = torch.abs(scaled[1:] - scaled[:-1]).mean(dim=(1, 2, 3))  # (T-1,)
             temp_mean = frame_diffs.mean()

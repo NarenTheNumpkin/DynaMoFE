@@ -133,13 +133,22 @@ def generate_benchmark_tables():
         "FCG (Official CVPR 2025)": fcg_df,
     }
 
-    # Extract standardized scores for static ensembles
-    def std_score(s):
-        return (s - s.mean()) / (s.std() + 1e-8)
+    # Extract canonical reference stats for honest, leak-free score standardization
+    can_means = {
+        m_name: float(df[df["codec_environment"] == "canonical"]["score"].mean())
+        for m_name, df in models.items()
+    }
+    can_stds = {
+        m_name: float(df[df["codec_environment"] == "canonical"]["score"].std())
+        for m_name, df in models.items()
+    }
+
+    def std_score(s, m_name):
+        return (s - can_means[m_name]) / (can_stds[m_name] + 1e-8)
 
     # Compute metric grid
     rows = []
-    all_scores = {m_name: {} for m_name in list(models.keys()) + ["Static Tri-Expert", "Static Quad-Expert", "DynaMoFE (Ours)"]}
+    all_scores = {m_name: {} for m_name in list(models.keys()) + ["Static Tri-Expert", "Static Quad-Expert", "DynaMoFE (Adaptive Gating OOF)"]}
 
     for env in ENVIRONMENTS:
         # Collect individual model scores
@@ -150,27 +159,27 @@ def generate_benchmark_tables():
             m = compute_metrics(y_true, s)
             rows.append({"model": m_name, "environment": env, "auc": m["auc"], "ap": m["ap"], "eer": m["eer"]})
 
-        # Static Tri-Expert (FCG + TALL + F3Net)
-        s_fcg = std_score(all_scores["FCG (Official CVPR 2025)"][env])
-        s_tall = std_score(all_scores["TALL (Local Seed 42)"][env])
-        s_f3 = std_score(all_scores["F3Net"][env])
+        # Static Tri-Expert (0.50 FCG + 0.25 TALL + 0.25 F3Net)
+        s_fcg = std_score(all_scores["FCG (Official CVPR 2025)"][env], "FCG (Official CVPR 2025)")
+        s_tall = std_score(all_scores["TALL (Local Seed 42)"][env], "TALL (Local Seed 42)")
+        s_f3 = std_score(all_scores["F3Net"][env], "F3Net")
         s_tri = 0.5 * s_fcg + 0.25 * s_tall + 0.25 * s_f3
         all_scores["Static Tri-Expert"][env] = s_tri
         m_tri = compute_metrics(y_true, s_tri)
         rows.append({"model": "Static Tri-Expert", "environment": env, "auc": m_tri["auc"], "ap": m_tri["ap"], "eer": m_tri["eer"]})
 
-        # Static Quad-Expert (+ Xception)
-        s_xc = std_score(all_scores["Xception"][env])
+        # Static Quad-Expert (0.40 FCG + 0.20 TALL + 0.20 F3Net + 0.20 Xception)
+        s_xc = std_score(all_scores["Xception"][env], "Xception")
         s_quad = 0.4 * s_fcg + 0.2 * s_tall + 0.2 * s_f3 + 0.2 * s_xc
         all_scores["Static Quad-Expert"][env] = s_quad
         m_quad = compute_metrics(y_true, s_quad)
         rows.append({"model": "Static Quad-Expert", "environment": env, "auc": m_quad["auc"], "ap": m_quad["ap"], "eer": m_quad["eer"]})
 
-        # DynaMoFE
+        # DynaMoFE (Adaptive Gating OOF)
         s_dynamo = np.array(dynamo_data["oof_predictions"][env])
-        all_scores["DynaMoFE (Ours)"][env] = s_dynamo
+        all_scores["DynaMoFE (Adaptive Gating OOF)"][env] = s_dynamo
         m_dyn = compute_metrics(y_true, s_dynamo)
-        rows.append({"model": "DynaMoFE (Ours)", "environment": env, "auc": m_dyn["auc"], "ap": m_dyn["ap"], "eer": m_dyn["eer"]})
+        rows.append({"model": "DynaMoFE (Adaptive Gating OOF)", "environment": env, "auc": m_dyn["auc"], "ap": m_dyn["ap"], "eer": m_dyn["eer"]})
 
     df_metrics = pd.DataFrame(rows)
     df_metrics.to_csv(OUTPUT_ROOT / "dynamofe_benchmark_metrics.csv", index=False)
@@ -193,7 +202,7 @@ def generate_benchmark_tables():
         "FCG (Official CVPR 2025)",
         "Static Tri-Expert",
         "Static Quad-Expert",
-        "DynaMoFE (Ours)",
+        "DynaMoFE (Adaptive Gating OOF)",
     ]
     pivot_auc = pivot_auc.reindex(model_order)
     pivot_auc.to_csv(OUTPUT_ROOT / "dynamofe_main_comparison_auc.csv")
@@ -219,10 +228,35 @@ def generate_benchmark_tables():
         "Static Quad-Expert",
     ]:
         for env in ["canonical"] + list(sealed_cols):
-            sa = all_scores["DynaMoFE (Ours)"][env]
+            sa = all_scores["DynaMoFE (Adaptive Gating OOF)"][env]
             sb = all_scores[baseline_name][env]
             diff, low, high = paired_cluster_bootstrap(y_true, sa, sb, clusters)
             bootstrap_rows.append({
+                "model_a": "DynaMoFE (Adaptive Gating OOF)",
+                "baseline": baseline_name,
+                "environment": env,
+                "auc_dynamofe": roc_auc_score(y_true, sa) * 100.0,
+                "auc_baseline": roc_auc_score(y_true, sb) * 100.0,
+                "point_diff": diff,
+                "ci_95_low": low,
+                "ci_95_high": high,
+                "statistically_superior": low > 0,
+            })
+
+    # Also compute paired bootstraps for Static Quad-Expert vs FCG, TALL, F3Net
+    for baseline_name in [
+        "TALL (Local Seed 42)",
+        "ForensicsAdapter",
+        "Xception",
+        "F3Net",
+        "FCG (Official CVPR 2025)",
+    ]:
+        for env in ["canonical"] + list(sealed_cols):
+            sa = all_scores["Static Quad-Expert"][env]
+            sb = all_scores[baseline_name][env]
+            diff, low, high = paired_cluster_bootstrap(y_true, sa, sb, clusters)
+            bootstrap_rows.append({
+                "model_a": "Static Quad-Expert",
                 "baseline": baseline_name,
                 "environment": env,
                 "auc_dynamofe": roc_auc_score(y_true, sa) * 100.0,

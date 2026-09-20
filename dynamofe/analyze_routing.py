@@ -134,14 +134,14 @@ def plot_benchmark_comparison():
         "F3Net",
         "FCG (Official CVPR 2025)",
         "Static Quad-Expert",
-        "DynaMoFE (Ours)",
+        "DynaMoFE (Adaptive Gating OOF)",
     ]
     model_colors = {
         "TALL (Local Seed 42)": "#8c564b",
         "F3Net": "#7570b3",
         "FCG (Official CVPR 2025)": "#2b5c8f",
         "Static Quad-Expert": "#7f7f7f",
-        "DynaMoFE (Ours)": "#d95f02",
+        "DynaMoFE (Adaptive Gating OOF)": "#d95f02",
     }
 
     fig, ax = plt.subplots(figsize=(11, 5.5), dpi=300)
@@ -205,7 +205,10 @@ def plot_bootstrap_forest():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5), dpi=300, sharey=True)
 
     for ax, env, title in [(ax1, "canonical", "Clean / Canonical"), (ax2, "h264_crf35", "H.264 (CRF 35)")]:
-        sub = df[df["environment"] == env].set_index("baseline")
+        if "model_a" in df.columns:
+            sub = df[(df["model_a"] == "DynaMoFE (Adaptive Gating OOF)") & (df["environment"] == env)].set_index("baseline")
+        else:
+            sub = df[df["environment"] == env].set_index("baseline")
         y_pos = np.arange(len(baselines))
 
         for idx, b in enumerate(baselines):
