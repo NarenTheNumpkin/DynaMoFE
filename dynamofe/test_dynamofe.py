@@ -73,8 +73,56 @@ def test_dynamofe_detector():
     assert torch.allclose(fused[0], torch.tensor(0.0), atol=1e-5)
 
 
+def test_deterministic_ranking_pipeline():
+    """Verify ranking loss sign, risk ordering, Top-1, Top-2, Kendall tau, and inverse-risk softmax."""
+    from scipy.stats import kendalltau
+    from dynamofe.train_router import pairwise_ranking_loss, confidence_weighted_ranking_loss
+
+    # Synthetic expert losses: E1 is best (0.1), E4 is worst (1.2)
+    true_losses = torch.tensor([[0.1, 0.4, 0.8, 1.2]])
+
+    # 1. Correct risk ordering: R1 < R2 < R3 < R4
+    pred_risk_correct = torch.tensor([[0.1, 0.4, 0.8, 1.2]])
+
+    # 2. Inverted risk ordering: R1 > R2 > R3 > R4 (worst expert has lowest risk)
+    pred_risk_inverted = torch.tensor([[1.2, 0.8, 0.4, 0.1]])
+
+    # Verify ranking loss decreases for correct ordering
+    loss_corr = pairwise_ranking_loss(pred_risk_correct, true_losses).item()
+    loss_inv = pairwise_ranking_loss(pred_risk_inverted, true_losses).item()
+    assert loss_corr < loss_inv, f"Correct loss ({loss_corr}) must be < inverted loss ({loss_inv})"
+
+    loss_conf_corr = confidence_weighted_ranking_loss(pred_risk_correct, true_losses).item()
+    loss_conf_inv = confidence_weighted_ranking_loss(pred_risk_inverted, true_losses).item()
+    assert loss_conf_corr < loss_conf_inv, f"Conf-weighted loss ({loss_conf_corr}) must be < inverted ({loss_conf_inv})"
+
+    # Verify Top-1 selects expert 0 (E1)
+    risk_np = pred_risk_correct.numpy()[0]
+    loss_np = true_losses.numpy()[0]
+    best_true = np.argmin(loss_np)
+    best_pred = np.argmin(risk_np)
+    assert best_true == 0, "Expert 0 should be true best"
+    assert best_pred == 0, "Top-1 should predict expert 0"
+
+    # Verify Top-2 returns experts 0 and 1
+    sorted_pred = np.argsort(risk_np)
+    assert sorted_pred[0] == 0 and sorted_pred[1] == 1, "Top-2 must return experts 0 and 1"
+
+    # Verify Kendall tau is strictly positive (+1.0)
+    true_ranks = np.argsort(np.argsort(loss_np))
+    pred_ranks = np.argsort(np.argsort(risk_np))
+    tau, _ = kendalltau(true_ranks, pred_ranks)
+    assert tau > 0.99, f"Kendall tau should be +1.0, got {tau}"
+
+    # Verify inverse-risk softmax assigns largest weight to expert 0
+    weights = torch.softmax(-pred_risk_correct / 1.0, dim=-1).numpy()[0]
+    assert np.argmax(weights) == 0, "Expert 0 must receive largest weight"
+    assert weights[0] > weights[1] > weights[2] > weights[3], "Weights must decrease with risk"
+
+
 if __name__ == "__main__":
     test_degradation_extractor()
     test_router_forward_and_gradients()
     test_dynamofe_detector()
-    print("All DynaMoFE unit tests passed successfully!")
+    test_deterministic_ranking_pipeline()
+    print("All DynaMoFE unit tests (including ranking pipeline) passed successfully!")

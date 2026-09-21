@@ -63,13 +63,38 @@ def compute_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]
     return {"auc": float(auc), "ap": float(ap), "eer": float(eer)}
 
 
+def confidence_weighted_ranking_loss(
+    pred_risks: Tensor,
+    true_losses: Tensor,
+    c_max: float = 2.0,
+) -> Tensor:
+    """Confidence-weighted pairwise ranking loss:
+    c_{ij} = min(|true_loss_i - true_loss_j|, c_max)
+    When true_loss_i < true_loss_j (expert i has lower loss / better performance),
+    we want pred_risks_i < pred_risks_j (expert i has lower predicted risk).
+    diff_true = true_loss_i - true_loss_j (< 0)
+    diff_pred = pred_risk_i - pred_risk_j (< 0)
+    sign_target = sign(diff_true) = -1
+    sign_target * diff_pred = (-1) * (< 0) > 0.
+    Misranking penalty: softplus(-sign_target * diff_pred).
+    """
+    diff_true = true_losses.unsqueeze(2) - true_losses.unsqueeze(1)
+    diff_pred = pred_risks.unsqueeze(2) - pred_risks.unsqueeze(1)
+    sign_target = torch.sign(diff_true)
+    c_ij = torch.clamp(torch.abs(diff_true), min=0.0, max=c_max)
+    mask = torch.triu(torch.ones(pred_risks.shape[1], pred_risks.shape[1], device=pred_risks.device), diagonal=1).bool()
+    loss_matrix = c_ij * F.softplus(-sign_target * diff_pred)
+    denom = c_ij[:, mask].sum() + 1e-7
+    return loss_matrix[:, mask].sum() / denom
+
+
 def pairwise_ranking_loss(pred_risks: Tensor, true_losses: Tensor) -> Tensor:
     """Pairwise ranking loss encouraging pred_risks_i < pred_risks_j when true_loss_i < true_loss_j."""
     diff_true = true_losses.unsqueeze(2) - true_losses.unsqueeze(1)
     diff_pred = pred_risks.unsqueeze(2) - pred_risks.unsqueeze(1)
     sign_target = torch.sign(diff_true)
     mask = torch.triu(torch.ones(pred_risks.shape[1], pred_risks.shape[1], device=pred_risks.device), diagonal=1).bool()
-    loss_matrix = F.softplus(sign_target * diff_pred)
+    loss_matrix = F.softplus(-sign_target * diff_pred)
     return loss_matrix[:, mask].mean()
 
 
@@ -126,8 +151,8 @@ def train_router_epoch(
         # Condition-dependent expert risk supervision
         loss_risk = huber_criterion(pred_risk, risks)
 
-        # Pairwise expert ranking loss
-        loss_rank = pairwise_ranking_loss(pred_risk, raw_losses)
+        # Pairwise expert ranking loss (confidence-weighted)
+        loss_rank = confidence_weighted_ranking_loss(pred_risk, raw_losses)
 
         # Fused decision margin cross-entropy loss
         loss_bce = F.binary_cross_entropy_with_logits(fused_scores, labels)
@@ -247,7 +272,12 @@ def run_cross_validation(
         train_risks = np.concatenate(train_risks, axis=0)
         train_raw_losses = np.concatenate(train_raw_losses, axis=0)
 
-        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks, train_raw_losses)
+        # Per-fold degradation feature normalization strictly on training fold
+        deg_mu = train_degs.mean(axis=0, keepdims=True)
+        deg_sigma = train_degs.std(axis=0, keepdims=True) + 1e-7
+        train_degs_norm = (train_degs - deg_mu) / deg_sigma
+
+        train_ds = RouterDataset(train_degs_norm, train_scs, train_lbs, train_risks, train_raw_losses)
         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
 
         if M == 4:
@@ -263,18 +293,20 @@ def run_cross_validation(
             hidden_dim=hidden_dim,
             base_weights=base_weights,
             routing_mode="residual",
-            delta_scale=0.5,
+            delta_scale=0.25,
+            use_tanh=True,
             use_confidence=False,
         ).to(device)
         detector = DynaMoFEDetector(router, expert_names=experts, means=fold_means, stds=fold_stds).to(device)
         optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-4)
 
         for epoch in range(num_epochs):
-            train_loss = train_router_epoch(detector, train_loader, optimizer, device, beta_risk=0.5, beta_rank=1.0)
+            train_loss = train_router_epoch(detector, train_loader, optimizer, device, beta_risk=0.5, beta_rank=0.5)
 
         # Evaluate out-of-fold for this fold on all environments
         for env in environments:
-            val_deg = deg_data["degradations"][env][val_mask]
+            val_deg_raw = deg_data["degradations"][env][val_mask]
+            val_deg = (val_deg_raw - deg_mu) / deg_sigma
             val_sc = env_scores[env][val_mask]
             val_lb = labels[val_mask]
 

@@ -39,7 +39,8 @@ class DynamicGatingRouter(nn.Module):
         use_confidence: bool = False,
         confidence_gain: float = 2.0,
         routing_mode: str = "residual",
-        delta_scale: float = 0.5,
+        delta_scale: float = 0.25,
+        use_tanh: bool = True,
     ) -> None:
         super().__init__()
         self.in_dim = in_dim
@@ -49,6 +50,7 @@ class DynamicGatingRouter(nn.Module):
         self.confidence_gain = confidence_gain
         self.routing_mode = routing_mode
         self.delta_scale = delta_scale
+        self.use_tanh = use_tanh
 
         if base_weights is not None:
             base_tensor = torch.tensor(base_weights, dtype=torch.float32)
@@ -80,8 +82,9 @@ class DynamicGatingRouter(nn.Module):
     def predict_risk(self, deg_features: Tensor) -> Tensor:
         """Predict relative condition-dependent risk R_m(d) for each expert: (B, M)."""
         raw_out = self.net(deg_features)
-        if self.routing_mode == "residual":
-            return -raw_out * self.delta_scale
+        if self.routing_mode in ("residual", "residual_tanh"):
+            delta = torch.tanh(raw_out) * self.delta_scale if (self.use_tanh or self.routing_mode == "residual_tanh") else raw_out * self.delta_scale
+            return -delta
         return raw_out
 
     def compute_weights(
@@ -96,8 +99,8 @@ class DynamicGatingRouter(nn.Module):
         """
         raw_out = self.net(deg_features)
 
-        if self.routing_mode == "residual":
-            delta = raw_out * self.delta_scale
+        if self.routing_mode in ("residual", "residual_tanh"):
+            delta = torch.tanh(raw_out) * self.delta_scale if (self.use_tanh or self.routing_mode == "residual_tanh") else raw_out * self.delta_scale
             logits = self.base_logits + delta
             w_dyn = F.softmax(logits, dim=-1)
             pred_risk = -delta
