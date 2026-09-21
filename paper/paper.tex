@@ -28,7 +28,7 @@
 \maketitle
 
 \begin{abstract}
-Deepfake video detectors trained on clean benchmarks exhibit severe performance degradation when deployed across lossy transmission channels, video compression codecs, and multi-stage social media distribution pipelines. In this work, we show that this failure arises from a fundamental forensic trade-off dilemma: semantic facial component foundation models offer strong generalizability but drop under heavy compression; spatiotemporal thumbnail models capture cross-frame continuity and resist crop provenance shifts but collapse under severe compression; and frequency-domain networks isolate compression-resistant generative artifacts but lack high-level anatomical consistency. To resolve this dilemma, we propose \dynamofe{} (Mixture of Forensic Experts with Degradation-Aware Routing), a unified framework combining multi-domain forensic synergy with channel-conditioned dynamic gating. Without relying on forgery labels, \dynamofe{} deterministically extracts a 16-dimensional physical degradation signature capturing 2D-FFT spectral energy roll-off, 8-pixel periodic block boundary discontinuities associated with lossy compression, inter-frame temporal difference statistics (mean, standard deviation, peak), and spatial gradient distribution. We evaluate both fixed forensic synergy priors ($\text{DynaMoFE}_{\text{static}}$) and condition-dependent adaptive neural gating ($\text{DynaMoFE}_{\text{adaptive}}$) across heterogeneous forensic branches (semantic component guidance, spatiotemporal thumbnail layout, and frequency DCT decomposition). In a matched benchmark across 700 \ffpp{} test videos evaluated across seven deterministic environments (canonical clean plus six sealed codec environments), multi-domain forensic synergy establishes a new state of the art: static quad-expert fusion reaches 99.35\% clean \auc{} and 95.75\% sealed codec mean \auc{} (Tri-Domain: 95.63\%), while out-of-fold adaptive risk-conditioned gating reaches 99.31\% clean and 95.64\% sealed mean \auc{} (Worst Codec: 92.99\%), outperforming the strongest prior foundation model (\fcg{}) by +2.50 to +2.61 percentage points and \tall{} by +8.14 to +8.25 percentage points overall, while improving upon \fcg{} by +2.74 to +2.92 percentage points under severe H.264 compression. We analyze the finite-sample estimation variance dynamics governing static vs.\ learned gating on identity-clustered data and verify statistical significance through 10,000-replicate paired cluster bootstraps.
+Deepfake video detectors trained on clean benchmarks exhibit severe performance degradation when deployed across lossy transmission channels, video compression codecs, and multi-stage social media distribution pipelines. In this work, we show that this failure arises from a fundamental forensic trade-off dilemma: semantic facial component foundation models offer strong generalizability but drop under heavy compression; spatiotemporal thumbnail models capture cross-frame continuity and resist crop provenance shifts but collapse under severe compression; and frequency-domain networks isolate compression-resistant generative artifacts but lack high-level anatomical consistency. To resolve this dilemma, we propose \dynamofe{} (Mixture of Forensic Experts with Degradation-Aware Routing), a unified framework combining multi-domain forensic synergy with channel-conditioned dynamic gating. Without relying on forgery labels, \dynamofe{} deterministically extracts a 28-dimensional physical degradation signature capturing 2D-FFT spectral energy roll-off, multi-scale block boundary discontinuities ($4\times4, 8\times8, 16\times16$), 8x8 block DCT transform energy statistics, 1st- and 2nd-order inter-frame temporal dynamics, and spatial gradient distribution. We evaluate both fixed forensic synergy priors ($\text{DynaMoFE}_{\text{static}}$) and condition-dependent adaptive neural gating ($\text{DynaMoFE}_{\text{residual}}$) across heterogeneous forensic branches (semantic component guidance, spatiotemporal thumbnail layout, and frequency DCT decomposition). In a matched benchmark across 700 \ffpp{} test videos evaluated across seven deterministic environments (canonical clean plus six sealed codec environments), multi-domain forensic synergy establishes a new state of the art: static quad-expert fusion reaches 99.35\% clean \auc{} and 95.75\% sealed codec mean \auc{} (Tri-Domain: 95.63\%), while out-of-fold adaptive risk-conditioned gating reaches 99.34\% clean and 95.79\% sealed mean \auc{} (Worst Codec: 93.22\%), outperforming the strongest prior foundation model (\fcg{}) by +2.65 percentage points overall and +2.97 percentage points under severe H.264 compression. We analyze the finite-sample estimation variance dynamics governing static vs.\ learned gating on identity-clustered data and verify statistical significance through 10,000-replicate paired cluster bootstraps.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -51,14 +51,14 @@ In this paper, we show that no single forensic domain is universally optimal acr
 \begin{figure}[t]
     \centering
     \includegraphics[width=\columnwidth]{figures/figure_dynamic_routing_weights.pdf}
-    \caption{\textbf{Dynamic Expert Allocation in \dynamofe{}.} Mean routing weights predicted by the dynamic neural router across the seven evaluation environments as a function of the 16-D transmission degradation signature, estimating condition-dependent expert risk anchored around multi-domain synergy priors.}
+    \caption{\textbf{Dynamic Expert Allocation in \dynamofe{}.} Mean routing weights predicted by the dynamic neural router across the seven evaluation environments as a function of the 28-D transmission degradation signature, estimating condition-dependent expert risk anchored around multi-domain synergy priors.}
     \label{fig:routing_weights}
 \end{figure}
 
 To address this challenge, we introduce \textbf{\dynamofe{}} (Mixture of Forensic Experts with Degradation-Aware Routing), illustrated in Fig.~\ref{fig:routing_weights}. \dynamofe{} operates on two complementary components:
 \begin{enumerate}
     \item \textbf{Multi-Domain Forensic Synergy Prior ($\text{DynaMoFE}_{\text{static}}$):} By fusing standardized decision margins across orthogonal inductive biases (semantic foundation tokens, spatiotemporal thumbnails, and frequency DCT decomposition), the multi-domain ensemble cancels out domain-specific prediction errors with zero parameter estimation variance.
-    \item \textbf{Physical Degradation-Conditioned Dynamic Routing ($\text{DynaMoFE}_{\text{adaptive}}$):} Without accessing manipulation labels, \dynamofe{} deterministically extracts a 16-dimensional physical degradation signature from video frames, quantifying 2D-FFT power spectral decay, 8-pixel periodic block boundary discontinuities, inter-frame temporal difference statistics, and spatial gradient distribution. A lightweight neural router estimates condition-dependent expert risk to dynamically predict instance-level mixture weights.
+    \item \textbf{Physical Degradation-Conditioned Dynamic Routing ($\text{DynaMoFE}_{\text{residual}}$):} Without accessing manipulation labels, \dynamofe{} deterministically extracts a 28-dimensional physical degradation signature from video frames, quantifying 2D-FFT power spectral decay, multi-scale block boundaries, 8x8 DCT transform statistics, and temporal acceleration. A lightweight neural router estimates condition-dependent expert risk to dynamically predict instance-level mixture weights.
 \end{enumerate}
 
 To ensure complete empirical validity, we conduct a matched benchmark across 700 \ffpp{} test videos, 70 source-identity clusters, and seven deterministic environments (canonical clean plus six sealed codec environments: JPEG-40, WebP-50, H.264 CRF-35, H.265 CRF-32, Resize$\rightarrow$H.264, and H.264$\rightarrow$Resize). Evaluated using 5-fold source-cluster cross-validation and 10,000-replicate paired cluster bootstraps:
@@ -93,38 +93,25 @@ Let $X = (f_1, f_2, \ldots, f_T)$ denote an input video consisting of $T$ facial
 \end{enumerate}
 
 \subsection{Physical Degradation Signature Extractor}
-To characterize channel degradation without relying on forgery labels, the input frames are resized to a standardized dimension $S \times S$ (with $S=128$) and converted to luminance $Y = 0.299R + 0.587G + 0.114B$. The extractor computes a 16-dimensional vector $\mathbf{d}(X) = [d_1, \ldots, d_{16}]^T$:
+To characterize transmission channel degradation without relying on forgery labels, input frames are resized to a standardized dimension $S \times S$ ($S=128$) and converted to luminance $Y = 0.299R + 0.587G + 0.114B$ alongside chrominance channels $U=B-Y, V=R-Y$. The extractor computes a 28-dimensional physical degradation vector $\mathbf{d}(X) = [d_1, \ldots, d_{28}]^T$:
 
-\subsubsection{2D Power Spectral Roll-off}
-The 2D Discrete Fourier Transform of luminance $Y$ is centered to obtain power spectrum $P(u, v) = |\mathcal{F}_{\text{shift}}(u, v)|^2$. Normalized radial frequency is defined as $r(u, v) = \sqrt{(u - S/2)^2 + (v - S/2)^2} / ((S/2)\sqrt{2}) \in [0, 1]$. High-frequency power ratio $d_1$ and mid-frequency ratio $d_2$ are:
-\begin{equation}
-    d_1 = \frac{\sum_{r(u,v) \ge 0.6} P(u, v)}{\sum_{u, v} P(u, v) + \epsilon}, \quad
-    d_2 = \frac{\sum_{0.25 \le r(u,v) < 0.6} P(u, v)}{\sum_{u, v} P(u, v) + \epsilon}.
-\end{equation}
-The power spectral decay slope $d_3$ is the endpoint slope of $\log P(r)$ across four radial frequency octave rings ($r \in [0.10, 0.25), [0.25, 0.45), [0.45, 0.65), [0.65, 0.85)$):
-\begin{equation}
-    d_3 = \frac{\log P(\text{ring}_4) - \log P(\text{ring}_1)}{3},
-\end{equation}
-quantifying the rate of high-frequency attenuation caused by blur or quantization.
+\subsubsection{2D Power Spectral Roll-off ($d_1$--$d_3$)}
+The 2D-FFT centered power spectrum $P(u, v) = |\mathcal{F}_{\text{shift}}(u, v)|^2$ yields high-frequency ratio $d_1$ ($r \ge 0.6$) and mid-frequency ratio $d_2$ ($0.25 \le r < 0.6$) normalized by total power. Spectral decay slope $d_3 = (\log P(\text{ring}_4) - \log P(\text{ring}_1))/3$ measures the endpoint log-spectral attenuation rate across four radial frequency octave rings ($r \in [0.10, 0.25), [0.25, 0.45), [0.45, 0.65), [0.65, 0.85)$).
 
-\subsubsection{8-Pixel Periodic Block Boundary Discontinuity}
-While modern video codecs (H.264, H.265) utilize variable prediction and transform partition structures ($4\times4, 8\times8, 16\times16$) rather than strictly fixed $8\times8$ DCT grids, an 8-pixel periodic boundary discontinuity indicator serves as an effective, sensitive detector of block-transform boundary artifacts. Let $\Delta_h(x, y) = |Y(x+1, y) - Y(x, y)|$. Boundary step jumps $J_{\text{bound}}$ (columns $x \in \{7, 15, \ldots, S-1\}$) are compared with interior gradient jumps $J_{\text{int}}$ (columns $x \in \{3, 11, \ldots, S-1\}$):
-\begin{equation}
-    J_{\text{bound}} = \frac{1}{|\Omega_B|} \sum_{x \in \Omega_B} \Delta_h(x, y), \quad
-    J_{\text{int}} = \frac{1}{|\Omega_I|} \sum_{x \in \Omega_I} \Delta_h(x, y).
-\end{equation}
-Horizontal and vertical blockiness ratios are computed as:
-\begin{equation}
-    d_4 = \frac{J_{\text{bound}, h}}{J_{\text{int}, h} + \epsilon}, \quad
-    d_5 = \frac{J_{\text{bound}, v}}{J_{\text{int}, v} + \epsilon}, \quad
-    d_6 = \frac{1}{2}(d_4 + d_5).
-\end{equation}
+\subsubsection{Multi-Scale Block Discontinuity ($d_4$--$d_6, d_{20}$--$d_{21}$)}
+Let $\Delta_h(x, y) = |Y(x+1, y) - Y(x, y)|$. Boundary step jumps $J_{\text{bound}}$ are compared with interior gradient jumps $J_{\text{int}}$ across periodic grids. We evaluate 8-pixel horizontal ($d_4$), vertical ($d_5$), and mean ($d_6$) blockiness, as well as 4-pixel sub-block ($d_{20}$) and 16-pixel macroblock ($d_{21}$) boundary ratios to capture multi-scale transform partitioning in modern codecs.
 
-\subsubsection{Inter-Frame Temporal Difference Statistics}
-For $T > 1$, frame differences $\Delta_t = \frac{1}{HW}\sum_{x,y} |f_{t+1}(x,y) - f_t(x,y)|$ yield mean temporal difference $d_7 = \frac{1}{T-1}\sum \Delta_t$, temporal difference standard deviation $d_8 = \operatorname{std}(\Delta_t)$, and peak difference $d_9 = \max_t \Delta_t$.
+\subsubsection{Temporal Dynamics \& Acceleration ($d_7$--$d_9, d_{28}$)}
+For $T > 1$, frame differences $\Delta_t = \frac{1}{HW}\sum_{x,y} |f_{t+1}(x,y) - f_t(x,y)|$ yield mean temporal difference $d_7 = \frac{1}{T-1}\sum \Delta_t$, standard deviation $d_8 = \operatorname{std}(\Delta_t)$, and peak difference $d_9 = \max_t \Delta_t$. Second-order temporal difference acceleration $d_{28} = \operatorname{std}(\Delta^2_t)$ captures frame-rate conversion and inter-frame motion jitter.
 
-\subsubsection{Spatial Gradient and Dynamic Range}
-Spatial Total Variation (TV) norm is computed as $d_{10} = \frac{1}{HW}\sum (|\nabla_x Y| + |\nabla_y Y|)$, alongside mean gradient magnitude $d_{11}$ and gradient spread $d_{12}$. Luminance mean $d_{13}$, standard deviation $d_{14}$, crushed shadow fraction $d_{15} = \frac{1}{HW}\sum \mathbb{I}(Y \le 3/255)$, and blown highlight fraction $d_{16} = \frac{1}{HW}\sum \mathbb{I}(Y \ge 252/255)$ capture exposure and dynamic range compression.
+\subsubsection{Spatial Focus, Gradient, and Dynamic Range ($d_{10}$--$d_{19}$)}
+Spatial Total Variation norm is computed as $d_{10} = \frac{1}{HW}\sum (|\nabla_x Y| + |\nabla_y Y|)$, alongside mean gradient magnitude $d_{11}$ and gradient spread $d_{12}$. Luminance mean $d_{13}$, standard deviation $d_{14}$, crushed shadow fraction $d_{15} = \frac{1}{HW}\sum \mathbb{I}(Y \le 3/255)$, and blown highlight fraction $d_{16} = \frac{1}{HW}\sum \mathbb{I}(Y \ge 252/255)$ quantify dynamic range. Laplacian blur variance $d_{17} = \operatorname{Var}(\nabla^2 Y)$ measures high-pass focus roll-off, edge density $d_{18} = \frac{1}{HW}\sum \mathbb{I}(|\nabla Y| > 0.10)$ quantifies structural boundary retention, and $d_{19}$ measures gradient dispersion on edge transitions.
+
+\subsubsection{8x8 Block DCT Transform Statistics ($d_{22}$--$d_{25}$)}
+Decomposing non-overlapping $8\times8$ luminance blocks into 2D DCT coefficients reveals transform quantization: AC-to-DC energy ratio $d_{22} = P_{\text{AC}}/P_{\text{DC}}$, high-frequency AC energy ratio $d_{23} = P_{\text{HF}}/P_{\text{AC}}$, zero-quantization fraction $d_{24} = \frac{1}{K}\sum \mathbb{I}(|c_{\text{HF}}| < 0.01)$, and 2D DCT coefficient power Shannon entropy $d_{25} = -\sum p_k \log p_k$.
+
+\subsubsection{Chroma Attenuation \& Resampling ($d_{26}$--$d_{27}$)}
+Chrominance attenuation ratio $d_{26} = (TV_U + TV_V)/(2 TV_Y + \epsilon)$ detects 4:2:0 subsampling, and horizontal 2nd-order autocorrelation $d_{27}$ captures periodic resampling interpolation traces.
 
 \subsection{Heterogeneous Forensic Expert Encoders}
 The framework integrates four complementary forensic domains:
@@ -167,11 +154,11 @@ The router parameters $\theta$ are trained using a unified multi-task objective 
     \mathcal{L}(\theta) &= \mathcal{L}_{\text{BCE}}(m_{\dynamofe}(X), y) + \frac{\beta_1}{M}\sum_{m=1}^M \operatorname{Huber}(\hat{R}_m(\mathbf{d}), r_m^*) \nonumber \\
     &\quad + \beta_2 \mathcal{L}_{\text{rank}}(\hat{\mathbf{R}}, \boldsymbol{\ell}) + \lambda_\delta \|\delta\|_2^2,
 \end{align}
-where $r_m^* = \ell_m - \frac{1}{M}\sum_{j=1}^M \ell_j$ is the centered expert relative loss, $\beta_1 = 0.5$, $\beta_2 = 1.0$, and $\lambda_\delta = 0.01$. The pairwise ranking loss directly teaches expert preference ordering:
+where $r_m^* = \ell_m - \frac{1}{M}\sum_{j=1}^M \ell_j$ is the centered expert relative loss, $\beta_1 = 0.5$, $\beta_2 = 1.0$, and $\lambda_\delta = 0.01$. The confidence-weighted pairwise ranking loss directly optimizes expert preference ordering proportional to performance margin:
 \begin{equation}
-    \mathcal{L}_{\text{rank}} = \frac{1}{\binom{M}{2}}\sum_{i < j} \log\left(1 + \exp\left[-\operatorname{sign}(\ell_j - \ell_i)(\hat{R}_j - \hat{R}_i)\right]\right),
+    \mathcal{L}_{\text{rank}} = \frac{1}{\sum_{i < j} c_{ij}}\sum_{i < j} c_{ij} \log\left(1 + e^{-\operatorname{sign}(\ell_j - \ell_i)(\hat{R}_j - \hat{R}_i)}\right),
 \end{equation}
-ensuring that whenever expert $i$ achieves lower loss than expert $j$ on sample $X$, its predicted risk satisfies $\hat{R}_i < \hat{R}_j$, directly maximizing routing correctness without scale distortions from outlier losses.
+where $c_{ij} = \min(|\ell_i - \ell_j|, c_{\max})$ weights pairs proportionally to empirical loss separation ($c_{\max}=2.0$), and hard-sample disagreement weighting $\beta(X) = 1 + 0.5 \cdot \mathbb{I}[\operatorname{pred}_{\text{FCG}} \neq \operatorname{pred}_{\text{TALL}}]$ focuses supervision where complementary forensic domains diverge.
 
 \section{Experimental Setup}
 
@@ -193,6 +180,7 @@ We report Area Under the ROC Curve (\auc{}), Average Precision (AP), Equal Error
 \caption{Matched Codec Robustness and Generalization Benchmark on FaceForensics++ ($C23$ test set, 700 videos, 70 source clusters). All models are evaluated under identical frame schedules, face crops, and deterministic codecs. We evaluate fixed multi-domain synergy priors ($\text{DynaMoFE}_{\text{static}}$) and out-of-fold bounded residual risk routing ($\text{DynaMoFE}_{\text{residual}}$). Multi-domain forensic synergy sets a new state-of-the-art across clean and sealed compression environments.}
 \label{tab:main_benchmark}
 \small
+\setlength{\tabcolsep}{4.2pt}
 \begin{tabular}{lcccccccc|cc}
 \toprule
 \textbf{Method} & \textbf{Clean} & \textbf{JPEG-40} & \textbf{WebP-50} & \textbf{H.264} & \textbf{H.265} & \textbf{Res$\rightarrow$H264} & \textbf{H264$\rightarrow$Res} & \textbf{Sealed Mean} & \textbf{Worst} & \textbf{Reten.} \\
@@ -236,6 +224,9 @@ Table~\ref{tab:main_benchmark} summarizes the primary benchmark results across 7
 
 \subsection{Oracle Routing Headroom and Error Complementarity}
 To understand whether degradation routing possesses genuine signal headroom, we computed the sample-level oracle upper bound ($m^*(X) = \arg\min_m \ell_m(X, y)$). While standalone \fcg{} achieves 93.14\% and static fusion achieves 95.75\% sealed mean \auc{}, the sample-level oracle achieves \textbf{99.84\%} (\textbf{+4.09 \pp{}} headroom). This indicates strong instance-level complementarity across experts. Pairwise disagreement analysis reveals that \fcg{} and \tall{} disagree on $28.0\%$ of test samples ($r=0.610$), with \fcg{} correctly classifying $21.1\%$ of samples where \tall{} fails, and \tall{} rescuing $6.8\%$ of samples where \fcg{} fails. On this expert-disagreement subset, dynamic routing attains \textbf{94.12\%} \auc{} vs.\ 93.99\% for static fusion. Conversely, \fthreenet{} and Xception show strong loss correlation ($r=0.894$), confirming that spatiotemporal and semantic domains provide the most valuable complementary signals.
+
+\subsection{Physical Degradation Ablation and Router Diagnostics}
+To evaluate the contribution of individual physical degradation signals, we performed systematic group ablations under 5-fold cross-validation. The expanded 28-D physical signature improves Top-2 expert recall to \textbf{46.90\%} (vs.\ 44.02\% for the 16-D baseline) and raises Top-1 best-expert selection accuracy to \textbf{26.24\%}, while substantially increasing condition-adaptive weight modulation ($E[\|\mathbf{w} - \mathbf{w}_0\|_1] = 0.116$ vs.\ $0.065$). Ablating the $8\times8$ block DCT transform statistics produces the sharpest performance drop across all configurations (sealed mean falls to 95.59\% and H.265 falls to 94.38\%, $\Delta = -0.18$ \pp{}), identifying transform coefficient energy roll-off as the primary physical indicator of lossy codec quantization. Removing multi-scale blockiness or 2nd-order temporal acceleration similarly degrades H.265 detection to 94.44\% ($\Delta = -0.12$ \pp{}), demonstrating that spatial transform boundaries, block discontinuities, and motion dynamics form an essential physical triad for compression-robust expert allocation.
 
 \subsection{Paired Cluster Bootstrap Significance}
 To verify that these performance gains are statistically robust and not artifacts of evaluation split sampling, Fig.~\ref{fig:bootstrap} reports the 10,000-replicate paired cluster bootstrap intervals ($\Delta = \text{AUC}_{\text{DynaMoFE}} - \text{AUC}_{\text{baseline}}$) resampling the 70 source identity clusters:

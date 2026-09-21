@@ -28,7 +28,9 @@ OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 
 def load_benchmark_data() -> tuple[dict[str, Any], dict[str, pd.DataFrame], list[str], np.ndarray, list[str]]:
     """Load pre-extracted degradations and expert predictions."""
-    deg_file = OUTPUT_ROOT / "degradations" / "ffpp_test_degradations.pt"
+    deg_file = OUTPUT_ROOT / "degradations" / "ffpp_test_degradations_expanded28.pt"
+    if not deg_file.exists():
+        deg_file = OUTPUT_ROOT / "degradations" / "ffpp_test_degradations.pt"
     if not deg_file.exists():
         deg_file = DATA_ROOT / "degradations" / "ffpp_test_degradations.pt"
     if not deg_file.exists():

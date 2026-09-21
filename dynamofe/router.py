@@ -30,7 +30,7 @@ class DynamicGatingRouter(nn.Module):
 
     def __init__(
         self,
-        in_dim: int = 16,
+        in_dim: int = 28,
         num_experts: int = 4,
         hidden_dim: int = 64,
         temperature: float = 1.0,

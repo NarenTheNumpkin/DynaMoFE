@@ -3,10 +3,11 @@
 Extracts deterministic, physical signal-degradation statistics from video frames
 without relying on semantic labels:
 1. 2D Spectral energy roll-off (quantization and blur detection)
-2. Block boundary discontinuity (8-pixel periodic boundary artifact indicator associated with block-based compression)
-3. Inter-frame temporal difference statistics (mean, standard deviation, and peak)
-4. Total variation and spatial gradient energy
-5. Dynamic range, contrast, and pixel clipping statistics
+2. Multi-scale block boundary discontinuity (4-px, 8-px, and 16-px periodic boundary artifacts)
+3. Inter-frame temporal dynamics and 2nd-order temporal acceleration
+4. Total variation, Laplacian blur variance, and spatial gradient distribution
+5. 8x8 block DCT transform energy concentration (AC/DC ratio, HF ratio, zero fraction, entropy)
+6. Dynamic range, contrast, pixel clipping, chroma attenuation, and resampling autocorrelation.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import torch.nn.functional as F
 class DegradationSignatureExtractor:
     """Extracts a K-dimensional degradation signature from video frames."""
 
-    FEATURE_NAMES = [
+    FEATURE_NAMES_16D = [
         "hf_spectral_ratio",       # Ratio of high-frequency to total power
         "mf_spectral_ratio",       # Ratio of mid-frequency to total power
         "spectral_decay_slope",    # Endpoint log-frequency power spectral decay rate across 4 rings
@@ -39,10 +40,36 @@ class DegradationSignatureExtractor:
         "clip_fraction_high",      # Fraction of blown highlights (>= 252/255)
     ]
 
-    DIMENSION = len(FEATURE_NAMES)  # 16 dimensions
+    FEATURE_NAMES_28D = FEATURE_NAMES_16D + [
+        "laplacian_variance",      # High-pass blur / focus indicator
+        "edge_density",            # Fraction of sharp edge transitions
+        "edge_spread",             # Standard deviation of gradient magnitudes on edges
+        "blockiness_4px",          # 4-pixel sub-block boundary discontinuity
+        "blockiness_16px",         # 16-pixel macroblock boundary discontinuity
+        "dct_ac_dc_ratio",         # 8x8 DCT AC-to-DC power ratio
+        "dct_hf_ratio",            # Fraction of AC power in highest spatial frequencies
+        "dct_zero_frac",           # Fraction of near-zero quantized high-frequency DCT coefficients
+        "dct_entropy",             # Shannon entropy of the 2D DCT coefficient power spectrum
+        "chroma_attenuation_ratio",# Ratio of chrominance TV to luminance TV
+        "resampling_indicator",    # 2nd-order horizontal difference autocorrelation (periodic resampling)
+        "temporal_accel_std",      # Standard deviation of 2nd-order inter-frame acceleration
+    ]
 
-    def __init__(self, size: int = 128) -> None:
+    # Default to modern 28D signature
+    FEATURE_NAMES = FEATURE_NAMES_28D
+    DIMENSION = len(FEATURE_NAMES_28D)  # 28 dimensions
+
+    def __init__(self, size: int = 128, version: str = "v2_28d") -> None:
         self.size = size
+        self.version = version
+        if version in ("v2_28d", "28", "28d"):
+            self.feature_names = self.FEATURE_NAMES_28D
+            self.dimension = 28
+        elif version in ("v1_16d", "16", "16d"):
+            self.feature_names = self.FEATURE_NAMES_16D
+            self.dimension = 16
+        else:
+            raise ValueError(f"Unknown degradation version: {version}. Expected 'v2_28d' or 'v1_16d'.")
 
     @torch.no_grad()
     def extract_from_numpy(self, frames: np.ndarray) -> np.ndarray:
@@ -55,7 +82,7 @@ class DegradationSignatureExtractor:
         """Extract degradation vector from a float Tensor (T, C, H, W) in [0, 1].
 
         Returns:
-            Tensor of shape (DIMENSION,)
+            Tensor of shape (dimension,)
         """
         T, C, H, W = frames.shape
         device = frames.device
@@ -69,8 +96,13 @@ class DegradationSignatureExtractor:
         # Compute luminance channel: Y = 0.299 R + 0.587 G + 0.114 B
         if C == 3:
             lum = 0.299 * scaled[:, 0:1] + 0.587 * scaled[:, 1:2] + 0.114 * scaled[:, 2:3]
+            u_ch = scaled[:, 2:3] - lum  # B - Y
+            v_ch = scaled[:, 0:1] - lum  # R - Y
         else:
             lum = scaled[:, 0:1]
+            u_ch = torch.zeros_like(lum)
+            v_ch = torch.zeros_like(lum)
+            
         S = self.size
 
         # 1. 2D Spectral Energy Roll-off via 2D FFT
@@ -104,39 +136,46 @@ class DegradationSignatureExtractor:
         # Endpoint spectral decay rate across 3 octave intervals
         decay_slope = (ring_powers[-1] - ring_powers[0]) / 3.0
 
-        # 2. Block Boundary Discontinuity (8-pixel periodic boundary indicator capturing block-transform boundary artifacts)
-        grid = 8
-        boundary_cols = torch.arange(grid - 1, S - 1, grid, device=device)
-        internal_cols = torch.arange(grid // 2 - 1, S - 1, grid, device=device)
+        # 2. Block Boundary Discontinuity (8-pixel periodic boundary indicator)
+        lum_2d = lum.squeeze(1)  # (T, S, S)
+        diff_h = (lum_2d[:, :, 1:] - lum_2d[:, :, :-1]).abs()  # (T, S, S-1)
+        diff_v = (lum_2d[:, 1:, :] - lum_2d[:, :-1, :]).abs()  # (T, S-1, S)
 
-        diff_h = torch.abs(lum[:, :, :, 1:] - lum[:, :, :, :-1])  # (T, 1, S, S-1)
-        diff_v = torch.abs(lum[:, :, 1:, :] - lum[:, :, :-1, :])  # (T, 1, S-1, S)
+        block_h_idx = torch.arange(7, S - 1, 8, device=device)
+        non_block_h_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 8 != 0], device=device)
+        b_h = diff_h[:, :, block_h_idx].mean() / (diff_h[:, :, non_block_h_idx].mean() + 1e-8)
 
-        b_jump_h = diff_h[:, :, :, boundary_cols].mean()
-        i_jump_h = diff_h[:, :, :, internal_cols].mean() + 1e-7
-        blockiness_h = (b_jump_h / i_jump_h).clamp(0.0, 10.0)
+        block_v_idx = torch.arange(7, S - 1, 8, device=device)
+        non_block_v_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 8 != 0], device=device)
+        b_v = diff_v[:, block_v_idx, :].mean() / (diff_v[:, non_block_v_idx, :].mean() + 1e-8)
+        blockiness_mean = (b_h + b_v) / 2.0
 
-        b_jump_v = diff_v[:, :, boundary_cols, :].mean()
-        i_jump_v = diff_v[:, :, internal_cols, :].mean() + 1e-7
-        blockiness_v = (b_jump_v / i_jump_v).clamp(0.0, 10.0)
-        blockiness_mean = 0.5 * (blockiness_h + blockiness_v)
-
-        # 3. Inter-Frame Temporal Difference Statistics (mean, standard deviation, peak)
+        # 3. Inter-Frame Temporal Difference Statistics
         if T > 1:
-            frame_diffs = torch.abs(scaled[1:] - scaled[:-1]).mean(dim=(1, 2, 3))  # (T-1,)
+            frame_diffs = (lum[1:] - lum[:-1]).abs().mean(dim=(1, 2, 3))
             temp_mean = frame_diffs.mean()
             temp_std = frame_diffs.std() if len(frame_diffs) > 1 else torch.tensor(0.0, device=device)
             temp_max = frame_diffs.max()
+            if T > 2:
+                second_diffs = (lum[2:] - 2 * lum[1:-1] + lum[:-2]).abs().mean(dim=(1, 2, 3))
+                temp_accel = second_diffs.std()
+            else:
+                temp_accel = torch.tensor(0.0, device=device)
         else:
             temp_mean = torch.tensor(0.0, device=device)
             temp_std = torch.tensor(0.0, device=device)
             temp_max = torch.tensor(0.0, device=device)
+            temp_accel = torch.tensor(0.0, device=device)
 
         # 4. Total Variation & Spatial Gradient
-        tv_norm = (diff_h.mean() + diff_v.mean())
-        grad_mag = torch.sqrt(diff_h[:, :, :-1, :] ** 2 + diff_v[:, :, :, :-1] ** 2 + 1e-12)
-        grad_mean = grad_mag.mean()
-        grad_std = grad_mag.std()
+        tv_norm = diff_h.mean() + diff_v.mean()
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=device).view(1, 1, 3, 3) / 8.0
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=device).view(1, 1, 3, 3) / 8.0
+        gx = F.conv2d(lum, sobel_x, padding=1)
+        gy = F.conv2d(lum, sobel_y, padding=1)
+        g_mag = torch.sqrt(gx ** 2 + gy ** 2 + 1e-12)
+        grad_mean = g_mag.mean()
+        grad_std = g_mag.std()
 
         # 5. Luminance Dynamic Range & Clipping
         lum_mean = lum.mean()
@@ -144,12 +183,12 @@ class DegradationSignatureExtractor:
         clip_low = (lum <= (3.0 / 255.0)).float().mean()
         clip_high = (lum >= (252.0 / 255.0)).float().mean()
 
-        features = torch.stack([
+        features_16 = [
             hf_ratio,
             mf_ratio,
             decay_slope,
-            blockiness_h,
-            blockiness_v,
+            b_h,
+            b_v,
             blockiness_mean,
             temp_mean,
             temp_std,
@@ -161,6 +200,87 @@ class DegradationSignatureExtractor:
             lum_std,
             clip_low,
             clip_high,
-        ]).float()
+        ]
 
-        return features
+        if self.dimension == 16:
+            return torch.stack(features_16).float()
+
+        # --- Extended 12 Features for 28-D Signature ---
+        # 6. Spatial Blur & Edge Structure
+        laplacian_k = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32, device=device).view(1, 1, 3, 3)
+        lap = F.conv2d(lum, laplacian_k, padding=1)
+        lap_var = lap.var(dim=(-2, -1)).mean()
+
+        edge_density = (g_mag > 0.10).float().mean()
+        edge_mask = (g_mag > 0.05)
+        edge_spread = g_mag[edge_mask].std() if edge_mask.sum() > 10 else torch.tensor(0.0, device=device)
+
+        # 7. Multi-scale Blockiness (4-px and 16-px)
+        b4_h_idx = torch.arange(3, S - 1, 4, device=device)
+        non_b4_h_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 4 != 0], device=device)
+        b4_h = diff_h[:, :, b4_h_idx].mean() / (diff_h[:, :, non_b4_h_idx].mean() + 1e-8)
+        b4_v_idx = torch.arange(3, S - 1, 4, device=device)
+        non_b4_v_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 4 != 0], device=device)
+        b4_v = diff_v[:, b4_v_idx, :].mean() / (diff_v[:, non_b4_v_idx, :].mean() + 1e-8)
+        b4_mean = (b4_h + b4_v) / 2.0
+
+        b16_h_idx = torch.arange(15, S - 1, 16, device=device)
+        non_b16_h_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 16 != 0], device=device)
+        b16_h = diff_h[:, :, b16_h_idx].mean() / (diff_h[:, :, non_b16_h_idx].mean() + 1e-8)
+        b16_v_idx = torch.arange(15, S - 1, 16, device=device)
+        non_b16_v_idx = torch.tensor([i for i in range(S - 1) if (i + 1) % 16 != 0], device=device)
+        b16_v = diff_v[:, b16_v_idx, :].mean() / (diff_v[:, non_b16_v_idx, :].mean() + 1e-8)
+        b16_mean = (b16_h + b16_v) / 2.0
+
+        # 8. 8x8 Block DCT Transform Statistics
+        lum_blocks = F.unfold(lum, kernel_size=8, stride=8).transpose(1, 2).contiguous()
+        lum_blocks = lum_blocks.view(-1, 8, 8)
+
+        dct_mat = torch.zeros((8, 8), device=device)
+        for i in range(8):
+            for j in range(8):
+                scale = 1.0 / np.sqrt(8) if i == 0 else np.sqrt(2.0 / 8)
+                dct_mat[i, j] = scale * np.cos((2 * j + 1) * i * np.pi / 16.0)
+
+        dct_coeff = torch.matmul(torch.matmul(dct_mat, lum_blocks), dct_mat.t())
+        dct_power = (dct_coeff ** 2).mean(dim=0)
+
+        dc_power = dct_power[0, 0] + 1e-12
+        ac_power = dct_power.sum() - dc_power
+        dct_ac_dc_ratio = (ac_power / dc_power).clamp(0.0, 100.0)
+
+        u_idx, v_idx = torch.meshgrid(torch.arange(8, device=device), torch.arange(8, device=device), indexing="ij")
+        hf_dct_mask = (u_idx + v_idx >= 7)
+        hf_dct_power = dct_power[hf_dct_mask].sum()
+        dct_hf_ratio = (hf_dct_power / (ac_power + 1e-12)).clamp(0.0, 1.0)
+
+        hf_coeffs = dct_coeff[:, hf_dct_mask].abs()
+        dct_zero_frac = (hf_coeffs < 0.01).float().mean()
+
+        p_dct = (dct_power / (dct_power.sum() + 1e-12)).clamp(min=1e-12)
+        dct_entropy = -(p_dct * p_dct.log()).sum()
+
+        # 9. Chroma Attenuation & Resampling Indicator
+        tv_u = (u_ch[:, :, :, 1:] - u_ch[:, :, :, :-1]).abs().mean() + (u_ch[:, :, 1:, :] - u_ch[:, :, :-1, :]).abs().mean()
+        tv_v = (v_ch[:, :, :, 1:] - v_ch[:, :, :, :-1]).abs().mean() + (v_ch[:, :, 1:, :] - v_ch[:, :, :-1, :]).abs().mean()
+        chroma_ratio = (tv_u + tv_v) / (2.0 * tv_norm + 1e-7)
+
+        autocorr_h = (diff_h[:, :, 2:] * diff_h[:, :, :-2]).mean() / (diff_h[:, :, 2:].var() + 1e-8)
+        resampling_indicator = autocorr_h.clamp(-1.0, 1.0)
+
+        features_28 = features_16 + [
+            lap_var,
+            edge_density,
+            edge_spread,
+            b4_mean,
+            b16_mean,
+            dct_ac_dc_ratio,
+            dct_hf_ratio,
+            dct_zero_frac,
+            dct_entropy,
+            chroma_ratio,
+            resampling_indicator,
+            temp_accel,
+        ]
+
+        return torch.stack(features_28).float()

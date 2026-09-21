@@ -1,4 +1,4 @@
-"""Unit tests for DynaMoFE components."""
+"""Unit tests for DynaMoFE components (v2 28-D and 16-D)."""
 
 import numpy as np
 import torch
@@ -8,25 +8,32 @@ from dynamofe.router import DynamicGatingRouter, DynaMoFEDetector
 
 
 def test_degradation_extractor():
-    extractor = DegradationSignatureExtractor(size=64)
-    # Test with random frames (32 frames, 112x112, 3 channels)
+    # 1. Test 28-D Extractor (Default)
+    extractor28 = DegradationSignatureExtractor(size=64, version="v2_28d")
     frames = np.random.randint(0, 256, (32, 112, 112, 3), dtype=np.uint8)
-    features = extractor.extract_from_numpy(frames)
-    assert isinstance(features, np.ndarray)
-    assert features.shape == (16,)
-    assert not np.isnan(features).any()
-    assert not np.isinf(features).any()
+    features28 = extractor28.extract_from_numpy(frames)
+    assert isinstance(features28, np.ndarray)
+    assert features28.shape == (28,)
+    assert not np.isnan(features28).any()
+    assert not np.isinf(features28).any()
 
     # Test tensor extraction directly
-    tensor = torch.rand(10, 3, 224, 224)
-    feat_t = extractor.extract_from_tensor(tensor)
-    assert feat_t.shape == (16,)
-    assert not torch.isnan(feat_t).any()
+    tensor = torch.rand(10, 3, 128, 128)
+    feat_t28 = extractor28.extract_from_tensor(tensor)
+    assert feat_t28.shape == (28,)
+    assert not torch.isnan(feat_t28).any()
+
+    # 2. Test 16-D Extractor (Legacy)
+    extractor16 = DegradationSignatureExtractor(size=64, version="v1_16d")
+    features16 = extractor16.extract_from_numpy(frames)
+    assert features16.shape == (16,)
+    assert not np.isnan(features16).any()
 
 
 def test_router_forward_and_gradients():
-    router = DynamicGatingRouter(in_dim=16, num_experts=4, hidden_dim=32)
-    x = torch.randn(8, 16)
+    # Test 28-D Router
+    router = DynamicGatingRouter(in_dim=28, num_experts=4, hidden_dim=32, routing_mode="residual")
+    x = torch.randn(8, 28)
     weights = router(x)
     assert weights.shape == (8, 4)
     # Check that weights sum to 1 across experts
@@ -35,20 +42,24 @@ def test_router_forward_and_gradients():
     # Check all weights are positive
     assert (weights >= 0).all()
 
+    # Check predicted risk
+    pred_risk = router.predict_risk(x)
+    assert pred_risk.shape == (8, 4)
+
     # Check backprop
-    loss = weights.sum()
+    loss = weights.sum() + pred_risk.sum()
     loss.backward()
     for param in router.parameters():
         assert param.grad is not None
 
 
 def test_dynamofe_detector():
-    router = DynamicGatingRouter(in_dim=16, num_experts=3, hidden_dim=32)
+    router = DynamicGatingRouter(in_dim=28, num_experts=3, hidden_dim=32)
     means = [1.0, 2.0, 3.0]
     stds = [0.5, 1.0, 1.5]
     detector = DynaMoFEDetector(router, expert_names=["fcg", "tall", "f3net"], means=means, stds=stds)
 
-    deg = torch.randn(4, 16)
+    deg = torch.randn(4, 28)
     scores = torch.tensor([
         [1.0, 2.0, 3.0],
         [2.0, 3.0, 4.5],
