@@ -61,6 +61,16 @@ def compute_metrics(y_true: np.ndarray, y_score: np.ndarray) -> dict[str, float]
     return {"auc": float(auc), "ap": float(ap), "eer": float(eer)}
 
 
+def pairwise_ranking_loss(pred_risks: Tensor, true_losses: Tensor) -> Tensor:
+    """Pairwise ranking loss encouraging pred_risks_i < pred_risks_j when true_loss_i < true_loss_j."""
+    diff_true = true_losses.unsqueeze(2) - true_losses.unsqueeze(1)
+    diff_pred = pred_risks.unsqueeze(2) - pred_risks.unsqueeze(1)
+    sign_target = torch.sign(diff_true)
+    mask = torch.triu(torch.ones(pred_risks.shape[1], pred_risks.shape[1], device=pred_risks.device), diagonal=1).bool()
+    loss_matrix = F.softplus(sign_target * diff_pred)
+    return loss_matrix[:, mask].mean()
+
+
 class RouterDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -68,17 +78,25 @@ class RouterDataset(torch.utils.data.Dataset):
         expert_scores: np.ndarray,
         labels: np.ndarray,
         risks: np.ndarray,
+        raw_losses: np.ndarray,
     ) -> None:
         self.degradations = torch.tensor(degradations, dtype=torch.float32)
         self.expert_scores = torch.tensor(expert_scores, dtype=torch.float32)
         self.labels = torch.tensor(labels, dtype=torch.float32)
         self.risks = torch.tensor(risks, dtype=torch.float32)
+        self.raw_losses = torch.tensor(raw_losses, dtype=torch.float32)
 
     def __len__(self) -> int:
         return len(self.labels)
 
     def __getitem__(self, idx: int):
-        return self.degradations[idx], self.expert_scores[idx], self.labels[idx], self.risks[idx]
+        return (
+            self.degradations[idx],
+            self.expert_scores[idx],
+            self.labels[idx],
+            self.risks[idx],
+            self.raw_losses[idx],
+        )
 
 
 def train_router_epoch(
@@ -86,17 +104,19 @@ def train_router_epoch(
     loader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    beta_risk: float = 1.0,
+    beta_risk: float = 0.5,
+    beta_rank: float = 1.0,
 ) -> float:
     model.train()
     total_loss = 0.0
-    huber_criterion = nn.HuberLoss(delta=1.0)
+    huber_criterion = nn.HuberLoss(delta=0.5)
 
-    for deg, scores, labels, risks in loader:
+    for deg, scores, labels, risks, raw_losses in loader:
         deg = deg.to(device)
         scores = scores.to(device)
         labels = labels.to(device)
         risks = risks.to(device)
+        raw_losses = raw_losses.to(device)
 
         optimizer.zero_grad()
         fused_scores, weights, pred_risk = model(deg, scores, return_risk=True)
@@ -104,10 +124,16 @@ def train_router_epoch(
         # Condition-dependent expert risk supervision
         loss_risk = huber_criterion(pred_risk, risks)
 
+        # Pairwise expert ranking loss
+        loss_rank = pairwise_ranking_loss(pred_risk, raw_losses)
+
         # Fused decision margin cross-entropy loss
         loss_bce = F.binary_cross_entropy_with_logits(fused_scores, labels)
 
-        loss = loss_bce + beta_risk * loss_risk
+        # Regularization on risk deviation
+        loss_reg = 0.01 * torch.mean(pred_risk ** 2)
+
+        loss = loss_bce + beta_risk * loss_risk + beta_rank * loss_rank + loss_reg
         loss.backward()
         optimizer.step()
 
@@ -188,6 +214,7 @@ def run_cross_validation(
         train_scs = []
         train_lbs = []
         train_risks = []
+        train_raw_losses = []
         y_train_tensor = torch.tensor(labels[train_mask], dtype=torch.float32)
 
         for env in environments:
@@ -210,13 +237,15 @@ def run_cross_validation(
             train_scs.append(s_env)
             train_lbs.append(labels[train_mask])
             train_risks.append(r_rel)
+            train_raw_losses.append(exp_losses)
 
         train_degs = np.concatenate(train_degs, axis=0)
         train_scs = np.concatenate(train_scs, axis=0)
         train_lbs = np.concatenate(train_lbs, axis=0)
         train_risks = np.concatenate(train_risks, axis=0)
+        train_raw_losses = np.concatenate(train_raw_losses, axis=0)
 
-        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks)
+        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks, train_raw_losses)
         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
 
         if M == 4:
@@ -231,14 +260,15 @@ def run_cross_validation(
             num_experts=M,
             hidden_dim=hidden_dim,
             base_weights=base_weights,
-            use_confidence=True,
-            confidence_gain=2.0,
+            routing_mode="residual",
+            delta_scale=0.5,
+            use_confidence=False,
         ).to(device)
         detector = DynaMoFEDetector(router, expert_names=experts, means=fold_means, stds=fold_stds).to(device)
-        optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-3)
+        optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-4)
 
         for epoch in range(num_epochs):
-            train_loss = train_router_epoch(detector, train_loader, optimizer, device, beta_risk=1.0)
+            train_loss = train_router_epoch(detector, train_loader, optimizer, device, beta_risk=0.5, beta_rank=1.0)
 
         # Evaluate out-of-fold for this fold on all environments
         for env in environments:
@@ -341,6 +371,7 @@ def run_leave_one_degradation_out(
         train_scs = []
         train_lbs = []
         train_risks = []
+        train_raw_losses = []
         y_tensor = torch.tensor(labels, dtype=torch.float32)
 
         for env in train_envs:
@@ -359,13 +390,15 @@ def run_leave_one_degradation_out(
             train_scs.append(s_env)
             train_lbs.append(labels)
             train_risks.append(r_rel)
+            train_raw_losses.append(exp_losses)
 
         train_degs = np.concatenate(train_degs, axis=0)
         train_scs = np.concatenate(train_scs, axis=0)
         train_lbs = np.concatenate(train_lbs, axis=0)
         train_risks = np.concatenate(train_risks, axis=0)
+        train_raw_losses = np.concatenate(train_raw_losses, axis=0)
 
-        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks)
+        train_ds = RouterDataset(train_degs, train_scs, train_lbs, train_risks, train_raw_losses)
         train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True)
 
         router = DynamicGatingRouter(
@@ -373,14 +406,15 @@ def run_leave_one_degradation_out(
             num_experts=M,
             hidden_dim=hidden_dim,
             base_weights=w_static.tolist(),
-            use_confidence=True,
-            confidence_gain=2.0,
+            routing_mode="residual",
+            delta_scale=0.5,
+            use_confidence=False,
         ).to(device)
         detector = DynaMoFEDetector(router, expert_names=experts, means=can_means, stds=can_stds).to(device)
-        optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-3)
+        optimizer = torch.optim.AdamW(detector.parameters(), lr=lr, weight_decay=1e-4)
 
         for epoch in range(num_epochs):
-            train_router_epoch(detector, train_loader, optimizer, device, beta_risk=1.0)
+            train_router_epoch(detector, train_loader, optimizer, device, beta_risk=0.5, beta_rank=1.0)
 
         # Evaluate on the unseen held-out codec
         test_deg = deg_data["degradations"][held_out]

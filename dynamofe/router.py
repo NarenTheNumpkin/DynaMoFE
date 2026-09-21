@@ -36,8 +36,10 @@ class DynamicGatingRouter(nn.Module):
         temperature: float = 1.0,
         dropout: float = 0.1,
         base_weights: Sequence[float] | None = None,
-        use_confidence: bool = True,
+        use_confidence: bool = False,
         confidence_gain: float = 2.0,
+        routing_mode: str = "residual",
+        delta_scale: float = 0.5,
     ) -> None:
         super().__init__()
         self.in_dim = in_dim
@@ -45,6 +47,8 @@ class DynamicGatingRouter(nn.Module):
         self.temperature = temperature
         self.use_confidence = use_confidence
         self.confidence_gain = confidence_gain
+        self.routing_mode = routing_mode
+        self.delta_scale = delta_scale
 
         if base_weights is not None:
             base_tensor = torch.tensor(base_weights, dtype=torch.float32)
@@ -75,7 +79,10 @@ class DynamicGatingRouter(nn.Module):
 
     def predict_risk(self, deg_features: Tensor) -> Tensor:
         """Predict relative condition-dependent risk R_m(d) for each expert: (B, M)."""
-        return self.net(deg_features)
+        raw_out = self.net(deg_features)
+        if self.routing_mode == "residual":
+            return -raw_out * self.delta_scale
+        return raw_out
 
     def compute_weights(
         self, deg_features: Tensor
@@ -83,22 +90,30 @@ class DynamicGatingRouter(nn.Module):
         """Compute final mixture weights, dynamic weights, and predicted relative risk.
 
         Returns:
-            weights: (B, M) final blended weights (after confidence fallback).
+            weights: (B, M) final blended weights.
             w_dyn: (B, M) dynamic weights from predicted inverse risk.
             pred_risk: (B, M) predicted relative risk.
         """
-        pred_risk = self.predict_risk(deg_features)  # (B, M)
-        # Inverted risk offset: lower predicted risk -> higher logit
-        logits = self.base_logits - pred_risk / self.temperature
-        w_dyn = F.softmax(logits, dim=-1)
+        raw_out = self.net(deg_features)
 
-        if self.use_confidence and self.num_experts > 1:
-            h_max = math.log(float(self.num_experts))
-            h = -(w_dyn * torch.log(w_dyn + 1e-8)).sum(dim=-1, keepdim=True)
-            alpha = torch.clamp(self.confidence_gain * (1.0 - h / h_max), 0.0, 1.0)
-            weights = (1.0 - alpha) * self.base_weights + alpha * w_dyn
-        else:
+        if self.routing_mode == "residual":
+            delta = raw_out * self.delta_scale
+            logits = self.base_logits + delta
+            w_dyn = F.softmax(logits, dim=-1)
+            pred_risk = -delta
             weights = w_dyn
+        else:
+            pred_risk = raw_out
+            logits = self.base_logits - pred_risk / self.temperature
+            w_dyn = F.softmax(logits, dim=-1)
+
+            if self.use_confidence and self.num_experts > 1:
+                h_max = math.log(float(self.num_experts))
+                h = -(w_dyn * torch.log(w_dyn + 1e-8)).sum(dim=-1, keepdim=True)
+                alpha = torch.clamp(self.confidence_gain * (1.0 - h / h_max), 0.0, 1.0)
+                weights = (1.0 - alpha) * self.base_weights + alpha * w_dyn
+            else:
+                weights = w_dyn
 
         return weights, w_dyn, pred_risk
 
