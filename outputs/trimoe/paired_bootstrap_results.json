@@ -1,0 +1,38 @@
+{
+  "canonical": {
+    "auc_dynamofe": 99.33418367346938,
+    "auc_trimoe": 92.21428571428572,
+    "delta_auc": 7.11989795918366,
+    "ci_95_lower": 5.034375000000007,
+    "ci_95_upper": 9.270471938775518,
+    "p_superior": 1.0,
+    "significant": true
+  },
+  "h264_crf35": {
+    "auc_dynamofe": 93.07142857142857,
+    "auc_trimoe": 64.16836734693877,
+    "delta_auc": 28.903061224489804,
+    "ci_95_lower": 25.017442602040827,
+    "ci_95_upper": 32.68131377551021,
+    "p_superior": 1.0,
+    "significant": true
+  },
+  "h265_crf32": {
+    "auc_dynamofe": 94.57397959183673,
+    "auc_trimoe": 63.371173469387756,
+    "delta_auc": 31.202806122448976,
+    "ci_95_lower": 27.512627551020405,
+    "ci_95_upper": 34.89285714285714,
+    "p_superior": 1.0,
+    "significant": true
+  },
+  "sealed_mean": {
+    "auc_dynamofe": 95.68409863945578,
+    "auc_trimoe": 67.52763605442178,
+    "delta_auc": 28.156462585034006,
+    "ci_95_lower": 26.17388924319727,
+    "ci_95_upper": 30.146045918367335,
+    "p_superior": 1.0,
+    "significant": true
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "trimoe": {
+    "model": "TriMoE",
+    "total_params_m": 28.4,
+    "active_params_m": 14.22,
+    "gflops": 4.81,
+    "peak_gpu_memory_mb": 241.9,
+    "latency_ms_per_video": 22.37,
+    "throughput_fps": 44.69,
+    "frames_per_video": 16
+  },
+  "dynamofe": {
+    "model": "DynaMoFE (Full Deployment)",
+    "total_params_m": 440.41,
+    "active_params_m": 440.41,
+    "gflops": 109.78,
+    "peak_gpu_memory_mb": 1420.0,
+    "latency_ms_per_video": 267.48,
+    "throughput_fps": 3.74,
+    "frames_per_video": 32
+  }
+}

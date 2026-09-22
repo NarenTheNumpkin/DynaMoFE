@@ -120,9 +120,43 @@ def test_deterministic_ranking_pipeline():
     assert weights[0] > weights[1] > weights[2] > weights[3], "Weights must decrease with risk"
 
 
+def test_trimoe_architecture_and_pipeline():
+    from dynamofe.trimoe import TRIMOE, TRIMOELoss, extract_multidomain_inputs
+
+    # 1. Verify parameter count matches paper (28.40M)
+    model = TRIMOE(num_classes=2, top_k=2, pretrained=False)
+    total_params = sum(p.numel() for p in model.parameters()) / 1e6
+    assert abs(total_params - 28.40) < 0.05, f"Expected ~28.40M params, got {total_params:.2f}M"
+
+    # 2. Test multi-domain input extraction on batch [2, 16, 224, 224, 3]
+    dummy_frames = torch.randint(0, 255, (2, 16, 224, 224, 3), dtype=torch.uint8)
+    sp, spec, temp = extract_multidomain_inputs(dummy_frames)
+    assert sp.shape == (2, 16, 3, 224, 224), f"Unexpected spatial shape: {sp.shape}"
+    assert spec.shape == (2, 16, 1, 224, 224), f"Unexpected spectral shape: {spec.shape}"
+    assert temp.shape == (2, 16, 4), f"Unexpected temporal shape: {temp.shape}"
+
+    # 3. Test forward pass
+    y_hat, details = model(sp, spec, temp)
+    assert y_hat.shape == (2,), f"Unexpected prediction shape: {y_hat.shape}"
+    assert details["prob"].shape == (2,), f"Unexpected probability shape: {details['prob'].shape}"
+    assert (details["prob"] >= 0.0).all() and (details["prob"] <= 1.0).all(), "Probabilities must be in [0, 1]"
+
+    # 4. Test loss with auxiliary load balancing
+    loss_fn = TRIMOELoss(lambda_aux=0.01)
+    labels = torch.tensor([0, 1], dtype=torch.long)
+    loss = loss_fn(details, labels)
+    assert loss.item() > 0.0, "Loss must be positive"
+    loss.backward()
+
+    # 5. Test spatial to spectral parameter transfer
+    model.transfer_spatial_to_spectral()
+
+
 if __name__ == "__main__":
     test_degradation_extractor()
     test_router_forward_and_gradients()
     test_dynamofe_detector()
     test_deterministic_ranking_pipeline()
-    print("All DynaMoFE unit tests (including ranking pipeline) passed successfully!")
+    test_trimoe_architecture_and_pipeline()
+    print("All DynaMoFE & TriMoE unit tests passed successfully!")
+
